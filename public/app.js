@@ -4,18 +4,23 @@
   // ---------------------------------------------------------------------------
   // Config
   // ---------------------------------------------------------------------------
-  const STORAGE_KEY = 'ixg-multiviewer:v1';
+  const STORAGE_KEY = 'ixg-multiviewer:v1'; // the app's name before it became IXG Wall; kept so saved walls carry over
   const DEFAULT_SETTINGS = {
     checkIntervalSec: 2,
     driftThresholdSec: 4,
     hardReloadMin: 30,
     autoResync: true,
     showStats: true,
-    layout: 'auto',
+    layoutMode: 'scroll',      // scroll: fixed columns, big tiles, scroll for more | fit: every feed on screen
+    scrollColumns: 2,
+    feedQuality: 'hd1080',     // what on-screen feeds stream at in scroll mode
+    cardPct: 32,               // stats card's share of the tile width in scroll mode
+    layout: 'auto',            // columns in fit mode
     bandwidthMbps: 0,          // 0 = unknown: boosts are governed by stall feedback alone
     priorityQuality: 'hd1080',
     loadConcurrency: 2,
     ytApiKey: '',              // optional YouTube Data API v3 key for audience stats
+    ytPollSec: 30,             // how often the backend asks YouTube (1 quota unit per 50 feeds)
   };
   const LIMITS = {
     checkIntervalSec: [1, 30],
@@ -23,7 +28,12 @@
     hardReloadMin: [0, 1440],
     bandwidthMbps: [0, 10000],
     loadConcurrency: [1, 6],
+    scrollColumns: [1, 4],
+    cardPct: [20, 45],
+    ytPollSec: [15, 300],
   };
+  const FEED_QUALITIES = ['large', 'hd720', 'hd1080'];
+  const OFFSCREEN_RELEASE_MS = 60000; // a feed scrolled out of view keeps its quality this long, then drops to 480p
 
   // YouTube quality levels: frame width, and a typical live bitrate. The bitrate is an
   // ESTIMATE — embeds don't expose the real one — used for budgeting and the header readout.
@@ -53,11 +63,11 @@
   const RESTORE_CALM_MS = 300000;     // calm needed before restoring one boost
   const LOAD_SLOT_MS = 15000;         // a starting feed holds a load slot until it plays, fails or this passes
   const MAX_AUTO_JUMPS_PER_TICK = 2;  // spread live-edge catch-ups after a wall-wide blip
-  const BUFFER_LOW_S = 4;             // buffer health below this reads amber, below CRIT red
-  const BUFFER_CRIT_S = 1.5;
+  const BUFFER_LOW_S = 4;             // buffer health below this reads red: a live feed is about to stall
+  const STALL_FLAG_MS = 60000;        // a stall stays flagged red this long after it ends, so a 1 s blip isn't missed
   const HISTORY_MS = 300000;          // feed stats sparklines cover the last 5 minutes
-  const YT_STATS_EVERY_MS = 60000;    // Data API poll: 1 unit per 50 feeds per call
   const NERDS_MIN_RENDER_PX = 560;    // YouTube's stats panel is ~510px wide inside the player
+  const SIDE_MIN_PX = 120;            // spare width beside the 16:9 video needed for the side panel
   const CATCHUP_RATE = 1.25;          // close small drift by playing faster instead of a visible jump
   const CATCHUP_MAX_DRIFT_S = 15;     // further behind than this: jump
   const CATCHUP_MAX_MS = 60000;       // a catch-up that hasn't finished by now becomes a jump
@@ -139,6 +149,8 @@
       settings[key] = clamp(Number(settings[key]), lo, hi, DEFAULT_SETTINGS[key]);
     }
     if (!['hd720', 'hd1080'].includes(settings.priorityQuality)) settings.priorityQuality = DEFAULT_SETTINGS.priorityQuality;
+    if (!['scroll', 'fit'].includes(settings.layoutMode)) settings.layoutMode = DEFAULT_SETTINGS.layoutMode;
+    if (!FEED_QUALITIES.includes(settings.feedQuality)) settings.feedQuality = DEFAULT_SETTINGS.feedQuality;
     if (typeof settings.ytApiKey !== 'string') settings.ytApiKey = '';
     const list = Array.isArray(data?.streams) ? data.streams : [];
     streams.splice(0, streams.length, ...list.filter((s) => s && s.id && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id)));
@@ -194,9 +206,13 @@
     congested: false,
     autoJumpsLeft: 0,
   };
-  const ytStats = new Map(); // video id -> audience stats from the YouTube Data API
+  const ytStats = new Map(); // video id -> audience stats from the YouTube Data API (via the backend)
   let ytStatsError = '';
   let ytStatsAt = 0;
+  let ytState = null;        // the backend's last YouTube report: status, quota, wall totals
+  let ytChecking = false;    // a new key was saved and the backend hasn't answered yet
+  let backendYoutube = null; // false: the running backend predates YouTube polling (restart it)
+  let viewerSeries = { id: null, series: [] }; // audience history for the inspected feed
   let inspected = null;      // tile whose feed stats sheet is open
   // Backend telemetry (CPU, memory, real network throughput, GPU engines) over SSE.
   const backend = { connected: false, latest: null, at: 0 };
@@ -259,12 +275,30 @@
     if (el.textContent !== text) el.textContent = text;
   }
 
+  function setTone(el, tone) {
+    if (tone) el.dataset.tone = tone;
+    else delete el.dataset.tone;
+  }
+
   // The level YouTube settles on for a player this many CSS pixels wide.
   function qualityForWidth(cssPx) {
     const px = cssPx * (window.devicePixelRatio || 1);
     for (const q of QUALITY_ORDER.slice(rank(EMBED_FLOOR))) if (QUALITY[q].width >= px) return q;
     return QUALITY_ORDER[QUALITY_ORDER.length - 1];
   }
+
+  // Seconds as a clock reading: 1:23:45, or 4:05 under an hour.
+  function fmtClock(sec) {
+    if (sec == null || !Number.isFinite(sec) || sec < 0) return '—';
+    const s = Math.floor(sec);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = String(s % 60).padStart(2, '0');
+    return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  }
+
+  // Time of day for an ISO timestamp, e.g. 07:31 PM.
+  const clockTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   function fmtCountdown(ms) {
     const total = Math.max(0, Math.round(ms / 1000));
@@ -379,10 +413,41 @@
   // ---------------------------------------------------------------------------
   // Tile: one monitored stream
   // ---------------------------------------------------------------------------
+  // One observer for every tile: a tile refits when it changes size (grid re-layout,
+  // window resize, fullscreen).
+  const tileOf = new WeakMap();
+  const tileObserver = new ResizeObserver((entries) => {
+    for (const e of entries) tileOf.get(e.target)?.fit();
+  });
+  // Which tiles are on screen in the scrolling wall: on-screen feeds get the scroll-mode
+  // quality; one scrolled away drops back after OFFSCREEN_RELEASE_MS (allocate re-checks then).
+  let releaseTimer = 0;
+  const viewObserver = new IntersectionObserver((entries) => {
+    const now = Date.now();
+    for (const e of entries) {
+      const t = tileOf.get(e.target);
+      if (!t) continue;
+      if (t.inView && !e.isIntersecting) t.leftViewAt = now;
+      t.inView = e.isIntersecting;
+    }
+    if (!ytReady) return;
+    allocate();
+    clearTimeout(releaseTimer);
+    releaseTimer = setTimeout(allocate, OFFSCREEN_RELEASE_MS + 500);
+  }, { root: $grid });
+  // Info bar heights, from the stylesheet so CSS and the layout maths can't disagree.
+  const rootPx = (name, fallback) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)) || fallback;
+  const BAR_FULL_PX = rootPx('--bar-full', 51);
+  const BAR_SLIM_PX = rootPx('--bar-slim', 33);
+  const compactNumber = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+  // Exact below 100,000 so small counts read precisely; 1.2M style above so they fit the panel.
+  const fmtCount = (v) => (v == null || v === '' ? '—'
+    : Number(v) < 100000 ? Number(v).toLocaleString('en-US') : compactNumber.format(Number(v)));
+
   class Tile {
     constructor(stream) {
       this.stream = stream;
-      this.stats = { stalls: 0, stallMs: 0, resyncs: 0, reloads: 0, catchups: 0, rebaselines: 0 };
+      this.stats = { stalls: 0, stallMs: 0, resyncs: 0, reloads: 0, catchups: 0, rebaselines: 0, lastStallAt: 0 };
       this.deferredMs = 0;          // scheduled refresh postponed while the laptop is busy
       this.lastRebaselineLogAt = 0;
       this.player = null;
@@ -401,6 +466,9 @@
       this.lastEvent = null;
       this.focused = false;  // lifted beside the feed sheet with YouTube's stats panel open
       this.gridWidth = 0;    // tile width while in the grid; the render width focus keeps
+      this.sideOn = false;   // side panel showing in the spare width beside the video
+      this.inView = true;    // on screen (scroll mode); the view observer corrects it on first layout
+      this.leftViewAt = 0;
       // Balance feeds across the two embed hosts (one browser process each).
       const onFirst = [...tiles.values()].filter((t) => t.host === HOSTS[0]).length;
       this.host = onFirst <= tiles.size - onFirst ? HOSTS[0] : HOSTS[1];
@@ -420,6 +488,30 @@
       this.$stat = {};
       this.el.querySelectorAll('[data-stat]').forEach((n) => { this.$stat[n.dataset.stat] = n; });
       this.$label.textContent = this.stream.label;
+      this.$sideEl = this.el.querySelector('.side');
+      this.$side = {
+        status: this.el.querySelector('.side-status'),
+        state: this.el.querySelector('.side-state'),
+        for: this.el.querySelector('.side-for'),
+        detail: this.el.querySelector('.side-detail'),
+        tag: this.el.querySelector('.side-yt-tag'),
+        note: this.el.querySelector('.side-note'),
+      };
+      this.$play = {};
+      this.el.querySelectorAll('[data-play]').forEach((n) => { this.$play[n.dataset.play] = n; });
+      this.$vital = {}; // the Lag and Drift labels, which read Time and Length for a recording
+      this.el.querySelectorAll('[data-vital]').forEach((n) => { this.$vital[n.dataset.vital] = n.querySelector('dt'); });
+      this.el.querySelectorAll('[data-yt]').forEach((n) => { this.$side[n.dataset.yt] = n; });
+      this.$drops = [...this.el.querySelectorAll('.side [data-drop]')]
+        .sort((a, b) => a.dataset.drop - b.dataset.drop);
+      tileOf.set(this.el, this);
+      tileObserver.observe(this.el);
+      viewObserver.observe(this.el);
+      this.$side.note.addEventListener('click', () => {
+        if (!this.$side.note.hasAttribute('data-link')) return;
+        setDrawer(true);
+        $drawer.querySelector('[data-setting="ytApiKey"]')?.focus();
+      });
 
       this.el.querySelector('.shield').addEventListener('click', () => toggleSolo(this));
       this.el.querySelector('.tile-actions').addEventListener('click', (e) => {
@@ -528,15 +620,61 @@
       return qualityForWidth(this.focused ? this.gridWidth : this.frame.clientWidth);
     }
 
+    // What a boost raises this feed to: the priority ceiling, or in scroll mode the quality
+    // on-screen feeds stream at (whichever is higher for a priority feed).
+    boostQuality() {
+      if (settings.layoutMode !== 'scroll') return settings.priorityQuality;
+      const q = settings.feedQuality;
+      return this.stream.priority && rank(settings.priorityQuality) > rank(q) ? settings.priorityQuality : q;
+    }
+
+    // Priority feeds always want a boost. In scroll mode so do feeds on screen, and a feed
+    // scrolled away keeps its boost for a minute so scrolling past doesn't force refreshes.
+    wantsBoost(now = Date.now()) {
+      if (this.stream.priority) return true;
+      if (settings.layoutMode !== 'scroll') return false;
+      return this.inView || now - this.leftViewAt < OFFSCREEN_RELEASE_MS;
+    }
+
     targetQuality(boost = this.boosted) {
       const natural = this.naturalQuality();
-      return boost && rank(settings.priorityQuality) > rank(natural) ? settings.priorityQuality : natural;
+      const q = this.boostQuality();
+      return boost && rank(q) > rank(natural) ? q : natural;
     }
 
     // Estimated Mbps this feed is pulling: the level the player reports, else the planned one.
     estMbps() {
       if (!this.mounted || this.error) return 0;
       return QUALITY[this.quality || this.targetQuality()].mbps;
+    }
+
+    // A tile wider than its 16:9 video moves the video left and fills the spare width with
+    // the side card, which takes over the info bar's stats (the bar slims to the name row).
+    // Decided from the tile's own size with the slim bar, so switching the card on never
+    // changes the size that decided it.
+    fit() {
+      const w = this.el.clientWidth;
+      const h = this.el.clientHeight;
+      const spare = w - ((h - BAR_SLIM_PX) * 16) / 9;
+      const on = settings.showStats && !this.focused && spare >= SIDE_MIN_PX;
+      if (on !== this.sideOn) {
+        this.sideOn = on;
+        this.el.classList.toggle('side-on', on);
+        this.render();
+      }
+      if (on) this.trimSide();
+      this.applySize();
+    }
+
+    // Every row in the card is one line of fixed height, so whether they all fit depends only
+    // on the card's size: hide whole rows, lowest priority first, until nothing is cut off.
+    trimSide() {
+      const side = this.$sideEl;
+      for (const el of this.$drops) el.hidden = false;
+      for (const el of this.$drops) {
+        if (side.scrollHeight <= side.clientHeight) break;
+        el.hidden = true;
+      }
     }
 
     // YouTube sizes quality to the player's render size, so the render width is the lever:
@@ -549,7 +687,7 @@
       const h = this.frame.clientHeight;
       if (!this.focused) this.gridWidth = w;
       if (!iframe) return;
-      let renderW = this.boosted ? QUALITY[settings.priorityQuality].width / (window.devicePixelRatio || 1) : 0;
+      let renderW = this.boosted ? QUALITY[this.boostQuality()].width / (window.devicePixelRatio || 1) : 0;
       if (this.focused) renderW = Math.max(renderW, this.gridWidth, NERDS_MIN_RENDER_PX);
       else if (renderW <= w) renderW = 0;
       if (!w || !h || !renderW || Math.abs(renderW - w) < 1) {
@@ -568,7 +706,8 @@
       this.boosted = on;
       this.applySize();
       if (on) {
-        if (this.mounted) logEvent(this, `Priority boost on (up to ${QUALITY[settings.priorityQuality].label})`);
+        // On-screen boosts in scroll mode come and go with scrolling; only log priority ones.
+        if (this.mounted && this.stream.priority) logEvent(this, `Priority boost on (up to ${QUALITY[this.boostQuality()].label})`);
         return;
       }
       // Players don't step down when shrunk, so releasing bandwidth takes a refresh.
@@ -672,7 +811,10 @@
       const now = Date.now();
       const prev = this.ps;
       if (prev === PS.BUFFERING && this.bufferingSince) {
-        if (this.countingStall) this.stats.stallMs += now - this.bufferingSince;
+        if (this.countingStall) {
+          this.stats.stallMs += now - this.bufferingSince;
+          this.stats.lastStallAt = now; // the red flag holds for STALL_FLAG_MS from here
+        }
         this.bufferingSince = null;
         this.countingStall = false;
       }
@@ -684,6 +826,7 @@
         this.countingStall = prev === PS.PLAYING && now > this.ignoreStallUntil;
         if (this.countingStall) {
           this.stats.stalls++;
+          this.stats.lastStallAt = now;
           wall.stallLog.push({ t: now, id: this.stream.id });
         }
       }
@@ -735,7 +878,7 @@
       const stuckLimit = Math.min(STUCK_BUFFER_MS * 2 ** this.stuckStrikes, STUCK_BUFFER_MAX_MS);
       if (s === PS.BUFFERING && now - this.bufferingSince > stuckLimit) {
         this.stuckStrikes++;
-        return this.reload(`stuck buffering for ${Math.round((now - this.bufferingSince) / 1000)}s`, 'warn');
+        return this.reload(`stuck buffering for ${Math.round((now - this.bufferingSince) / 1000)}s`, 'bad');
       }
       if (s === PS.PLAYING && now - this.playingSince > 60000) this.stuckStrikes = 0;
       if (s === PS.PAUSED && now - this.stateSince > PAUSE_RESUME_MS) this.player.playVideo();
@@ -862,13 +1005,13 @@
       this.reset();
       requestMount(this, front);
       this.scheduleReload();
-      this.pulse('reload');
+      this.pulse(level === 'bad' ? 'alarm' : 'reload');
       this.render();
     }
 
     pulse(kind) {
       const cls = `pulse-${kind}`;
-      this.el.classList.remove('pulse-resync', 'pulse-reload');
+      this.el.classList.remove('pulse-resync', 'pulse-reload', 'pulse-alarm');
       void this.el.offsetWidth; // restart the animation
       this.el.classList.add(cls);
       clearTimeout(this.pulseTimer);
@@ -882,14 +1025,39 @@
       }
       if (this.queued) return [`Queued ${loadQueue.indexOf(this) + 1}`, 'idle', 'Waiting for a load slot'];
       if (!this.ready) return ['Loading', 'idle', 'Player is starting'];
+      // YouTube's own word on the broadcast (Data API) sharpens what the player alone can say.
+      const yt = this.ytInfo();
+      const ended = yt?.endedAt ? `Broadcast ended at ${clockTime(yt.endedAt)}` : '';
       switch (this.ps) {
         case PS.PLAYING:
           if (this.catchUp) return ['Catch-up', 'ok', `Playing at ${CATCHUP_RATE}× to close +${(this.catchUp.from || 0).toFixed(1)}s of drift`];
-          return this.isLive ? ['Live', 'ok', 'Playing live'] : ['Playing', 'ok', 'Playing (not a live stream)'];
-        case PS.BUFFERING: return ['Buffering', 'warn', 'Buffering'];
+          if (this.isLive) return ['Live', 'ok', 'Playing live'];
+          if (ended) return ['Ended', 'warn', `${ended} · playing the recording`];
+          return ['Playing', 'ok', yt?.startedAt ? 'Playing the recording of a broadcast' : 'Playing a video, not a live stream'];
+        // A live broadcast that isn't moving is a red flag, never amber.
+        case PS.BUFFERING: return ['Buffering', 'bad', 'Buffering: the picture has stopped'];
         case PS.PAUSED: return ['Paused', 'warn', 'Paused — resuming automatically'];
-        case PS.ENDED: return ['Ended', 'idle', 'Stream ended — retrying in case it restarts'];
-        default: return ['Waiting', 'idle', 'Waiting for the stream to start'];
+        case PS.ENDED: return ended ? ['Ended', 'warn', `${ended} · retrying in case it restarts`] : ['Ended', 'idle', 'Stream ended — retrying in case it restarts'];
+        default:
+          if (yt?.broadcast === 'upcoming') return ['Scheduled', 'idle', yt.scheduledAt ? `Scheduled to start at ${clockTime(yt.scheduledAt)}` : 'Scheduled, not live yet'];
+          return ['Waiting', 'idle', 'Waiting for the stream to start'];
+      }
+    }
+
+    // What the YouTube Data API reports for this video, when there's a key and an answer.
+    ytInfo() {
+      if (!settings.ytApiKey.trim()) return null;
+      const yt = ytStats.get(this.stream.source.id);
+      return yt && !yt.missing ? yt : null;
+    }
+
+    // A recording (not live): where the playhead is and how long it runs, in place of lag and drift.
+    playhead() {
+      if (this.isLive !== false || !this.ready || !this.player) return null;
+      try {
+        return { at: this.player.getCurrentTime(), length: this.player.getDuration() || this.ytInfo()?.lengthSec || null };
+      } catch {
+        return null;
       }
     }
 
@@ -899,6 +1067,7 @@
       setText(this.$statusText, text);
       this.$status.dataset.tone = tone;
       this.$status.title = detail;
+      this.el.classList.toggle('alarm', tone === 'bad');
       this.el.classList.toggle('solo', solo === this);
       this.$resync.hidden = this.isLive === false;
 
@@ -911,31 +1080,142 @@
         ? `Boost held: ${this.heldReason || 'waiting'}`
         : `Loads first · streams up to ${QUALITY[settings.priorityQuality].label}`;
 
-      // Every tile shows the same readings in the same order; '—' where one doesn't apply.
-      const { latency, buffer, drift, quality, stalls, jumps, reloads, refresh } = this.$stat;
-      setText(latency, `LAG ${this.latency == null ? '—' : `${this.latency.toFixed(1)}s`}`);
-      const buf = this.ready && (this.ps === PS.PLAYING || this.ps === PS.BUFFERING) ? this.buffer : null;
-      setText(buffer, `BUF ${buf == null ? '—' : `${buf.toFixed(1)}s`}`);
-      buffer.dataset.tone = buf == null ? '' : buf < BUFFER_CRIT_S ? 'bad' : buf < BUFFER_LOW_S ? 'warn' : '';
       this.el.classList.toggle('inspected', inspected === this);
-      if (this.drift == null) {
-        setText(drift, 'DRIFT —');
-        delete drift.dataset.tone;
-      } else {
-        const d = Math.max(0, this.drift);
-        setText(drift, `DRIFT +${d.toFixed(1)}s`);
-        const t = settings.driftThresholdSec;
-        drift.dataset.tone = d < t / 2 ? 'ok' : d < t ? 'warn' : 'bad';
+      if (this.sideOn) {
+        this.renderSide(now);
+        return;
       }
-      setText(quality, `Q ${this.quality ? QUALITY[this.quality].label : '—'}`);
-      const ongoing = this.countingStall && this.bufferingSince ? now - this.bufferingSince : 0;
-      setText(stalls, `STALLS ${this.stats.stalls} · ${((this.stats.stallMs + ongoing) / 1000).toFixed(1)}s`);
-      stalls.dataset.tone = ongoing ? 'warn' : '';
-      setText(jumps, `JUMPS ${this.stats.resyncs}`);
-      setText(reloads, `REFRESHES ${this.stats.reloads}`);
-      setText(refresh, `NEXT REFRESH ${Number.isFinite(this.nextReloadAt) ? fmtCountdown(this.nextReloadAt - now) : 'OFF'}`);
+      // Info bar: every tile shows the same readings in the same order; '—' where one doesn't apply.
+      const r = this.readings(now);
+      const rec = this.isLive === false;
+      const labels = { latency: rec ? 'TIME' : 'LAG', buffer: 'BUF', drift: rec ? 'LENGTH' : 'DRIFT', quality: 'Q', stalls: 'STALLS', jumps: 'JUMPS', reloads: 'REFRESHES', refresh: 'NEXT REFRESH' };
+      for (const [key, [value, tone]] of Object.entries(r)) {
+        setText(this.$stat[key], `${labels[key]} ${key === 'refresh' ? value.toUpperCase() : value}`);
+        setTone(this.$stat[key], tone);
+      }
     }
-  }
+
+    // Stalling now, or stalled within the last minute.
+    stallFlagged(now) {
+      return (this.countingStall && !!this.bufferingSince)
+        || (this.stats.lastStallAt > 0 && now - this.stats.lastStallAt < STALL_FLAG_MS);
+    }
+
+    // The measured readings shown in the info bar or the side card: [text, tone] each.
+    readings(now) {
+      const buf = this.ready && (this.ps === PS.PLAYING || this.ps === PS.BUFFERING) ? this.buffer : null;
+      const d = this.drift == null ? null : Math.max(0, this.drift);
+      const t = settings.driftThresholdSec;
+      const ongoing = this.countingStall && this.bufferingSince ? now - this.bufferingSince : 0;
+      const ph = this.playhead();
+      return {
+        latency: ph ? [fmtClock(ph.at), ''] : [this.latency == null ? '—' : `${this.latency.toFixed(1)}s`, ''],
+        // A thin buffer on a live broadcast is about to stall: red, not amber.
+        buffer: [buf == null ? '—' : `${buf.toFixed(1)}s`, buf != null && buf < BUFFER_LOW_S ? 'bad' : ''],
+        drift: ph ? [fmtClock(ph.length), ''] : [d == null ? '—' : `+${d.toFixed(1)}s`, d == null ? '' : d < t / 2 ? 'ok' : d < t ? 'warn' : 'bad'],
+        quality: [this.quality ? QUALITY[this.quality].label : '—', ''],
+        stalls: [`${this.stats.stalls} · ${((this.stats.stallMs + ongoing) / 1000).toFixed(1)}s`, this.stallFlagged(now) ? 'bad' : ''],
+        jumps: [String(this.stats.resyncs), ''],
+        reloads: [String(this.stats.reloads), ''],
+        refresh: [Number.isFinite(this.nextReloadAt) ? fmtCountdown(this.nextReloadAt - now) : 'Off', ''],
+      };
+    }
+
+    // Side card: the status in large type with how long it has lasted and what it means,
+    // the measured readings, then the audience numbers YouTube reports (Data API key needed).
+    renderSide(now) {
+      if (!this.sideOn) return;
+      const p = this.$side;
+      const [text, tone, detail] = this.status();
+      setText(p.state, text);
+      p.status.dataset.tone = tone;
+      p.status.title = detail;
+      const since = this.error ? this.errorAt : this.catchUp ? this.catchUp.since : this.stateSince;
+      setText(p.for, this.queued ? '' : fmtDuration(now - since));
+      setText(p.detail, detail);
+      p.detail.title = detail;
+
+      // Live: lag and drift. A recording: where the playhead is and how long it runs.
+      const rec = this.playhead() != null;
+      setText(this.$vital.latency, rec ? 'Time' : 'Lag');
+      setText(this.$vital.drift, rec ? 'Length' : 'Drift');
+      for (const [key, [value, valueTone]] of Object.entries(this.readings(now))) {
+        setText(this.$play[key], value);
+        setTone(this.$play[key], valueTone);
+      }
+
+      // YouTube: every block shows a number, or says plainly why there isn't one.
+      const hasKey = !!settings.ytApiKey.trim();
+      const entry = hasKey ? ytStats.get(this.stream.source.id) : null;
+      const yt = entry && !entry.missing ? entry : null;
+      const ended = !!yt?.endedAt;
+      const upcoming = yt?.broadcast === 'upcoming';
+      const liveNow = yt?.broadcast === 'live';
+      const a = yt?.analysis || {};
+      setText(p.tag, yt ? 'Measured' : 'N·A');
+
+      let viewers = '—';
+      let word = '';
+      if (yt?.viewers != null) viewers = fmtCount(yt.viewers);
+      else if (ended) word = 'Ended';
+      else if (upcoming) word = 'Not live yet';
+      else if (liveNow) word = 'Hidden or 0';
+      else if (yt) word = 'Not live';
+      setText(p.viewers, word || viewers);
+      if (word) p.viewers.dataset.kind = 'word';
+      else delete p.viewers.dataset.kind;
+      p.viewers.title = yt?.viewers != null ? `${fmtInt(yt.viewers)} watching now`
+        : liveNow ? 'YouTube leaves the count out when nobody else is watching or the channel hides it'
+          : word ? `No live viewers: ${word.toLowerCase()}` : 'Not reported';
+      setText(p.viewersProv, yt ? (yt.viewers != null ? 'Measured' : 'N·A') : '');
+      // Delta: the sign colours itself (up ok, down danger), as the SKWAD metric does.
+      const pct = yt?.viewers != null ? a.trendPct : null;
+      setText(p.trend, pct == null ? '' : `${pct > 0 ? '+' : pct < 0 ? '−' : '±'}${Math.abs(pct)}%`);
+      setTone(p.trend, pct > 0 ? 'ok' : pct < 0 ? 'bad' : '');
+      p.trend.title = pct == null ? '' : `Change in viewers over the last ${a.trendMins} min`;
+
+      setText(p.peak, fmtCount(a.peak));
+      p.peak.title = a.peak != null ? `Peak ${fmtInt(a.peak)} at ${clockTime(a.peakAt)}, since tracking began` : 'No viewer counts recorded yet';
+      // No viewer counts behind it (an ended or hidden-count stream): Peak gives up its space.
+      const peakCell = p.peak.closest('.m');
+      if (peakCell.hasAttribute('data-empty') !== (a.peak == null)) {
+        peakCell.toggleAttribute('data-empty', a.peak == null);
+        this.trimSide();
+      }
+      setText(p.likes, yt?.likes != null ? fmtCount(yt.likes) : yt ? 'Hidden' : '—');
+      p.likes.title = yt?.likes != null ? fmtInt(yt.likes) : 'The channel hides likes';
+      setText(p.views, yt?.views != null ? fmtCount(yt.views) : '—');
+      p.views.title = yt?.views != null ? fmtInt(yt.views) : 'Not reported';
+      const start = yt?.startedAt ? Date.parse(yt.startedAt) : NaN;
+      setText(p.uptimeLabel, ended ? 'Ran for' : upcoming ? 'Starts' : 'Live for');
+      setText(p.uptime, upcoming && yt.scheduledAt ? clockTime(yt.scheduledAt)
+        : Number.isFinite(start) ? fmtDuration((ended ? Date.parse(yt.endedAt) : now) - start) : '—');
+      setText(p.comments, yt?.comments != null ? fmtCount(yt.comments) : yt ? 'Off' : '—');
+      setText(p.subscribers, yt?.subscribers != null ? fmtCount(yt.subscribers) : yt ? 'Hidden' : '—');
+      const access = yt ? [
+        yt.privacy ? yt.privacy[0].toUpperCase() + yt.privacy.slice(1) : null,
+        yt.embeddable === false ? 'No embed' : yt.embeddable ? 'Embed ok' : null,
+        yt.definition ? yt.definition.toUpperCase() : null,
+      ].filter(Boolean).join(' · ') : '';
+      setText(p.access, access || '—');
+      // Embedding off or a private video: this wall can't show it. That's an outage, so red.
+      setTone(p.access, yt && (yt.embeddable === false || yt.privacy === 'private') ? 'bad' : '');
+
+      let note = '';
+      let noteTone = '';
+      if (!hasKey) note = 'Add a YouTube API key in Settings for viewers and likes';
+      else if (ytStatsError) [note, noteTone] = ['YouTube API error: see Settings', 'bad'];
+      else if (!entry) note = 'Waiting for YouTube…';
+      else if (entry.missing) [note, noteTone] = ['YouTube has no public video with this ID', 'bad'];
+      else if (ended) [note, noteTone] = [`Broadcast ended at ${clockTime(yt.endedAt)}`, 'warn'];
+      else if (upcoming) note = yt.scheduledAt ? `Scheduled for ${new Date(yt.scheduledAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}` : 'Scheduled, not live yet';
+      else note = `Updated ${fmtDuration(now - ytStatsAt)} ago · every ${settings.ytPollSec} s`;
+      setText(p.note, note);
+      p.note.title = ytStatsError || '';
+      p.note.toggleAttribute('data-link', !hasKey);
+      if (noteTone) p.note.dataset.tone = noteTone;
+      else delete p.note.dataset.tone;
+    }  }
 
   // ---------------------------------------------------------------------------
   // Wall
@@ -990,16 +1270,20 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Bandwidth: standard feeds sit at the embed floor; priority feeds are boosted
-  // in wall order while the estimate fits the stated bandwidth and the link is calm.
+  // Bandwidth: standard feeds sit at the embed floor. Boosts go to priority feeds and, in
+  // scroll mode, to the feeds on screen: priority first, then wall order, while the
+  // estimate fits the stated bandwidth, the link is calm and the laptop keeps up.
   // ---------------------------------------------------------------------------
   function allocate() {
+    const now = Date.now();
     const list = [...tiles.values()];
+    const wanting = list.filter((t) => t.wantsBoost(now));
+    wanting.sort((a, b) => Number(!!b.stream.priority) - Number(!!a.stream.priority));
     const budget = settings.bandwidthMbps * BUDGET_HEADROOM;
     let planned = 0;
-    for (const t of list) if (!t.stream.priority) planned += QUALITY[t.targetQuality(false)].mbps;
+    for (const t of list) if (!wanting.includes(t)) planned += QUALITY[t.targetQuality(false)].mbps;
     let granted = 0;
-    for (const t of list.filter((x) => x.stream.priority)) {
+    for (const t of wanting) {
       const boosted = QUALITY[t.targetQuality(true)].mbps;
       const base = QUALITY[t.targetQuality(false)].mbps;
       let held = '';
@@ -1014,7 +1298,9 @@
       }
       t.setBoost(!held, held);
     }
-    for (const t of list) if (!t.stream.priority && t.boosted) t.setBoost(false, 'priority removed');
+    for (const t of list) {
+      if (t.boosted && !wanting.includes(t)) t.setBoost(false, settings.layoutMode === 'scroll' ? 'scrolled out of view' : 'priority removed');
+    }
   }
 
   // Several feeds stalling inside a minute points at our link rather than one source.
@@ -1025,7 +1311,7 @@
     const congested = stalledFeeds >= Math.max(CONGESTION_MIN_FEEDS, Math.ceil(tiles.size * 0.2));
     const boosted = [...tiles.values()].filter((t) => t.boosted).length;
     if (congested) {
-      if (!wall.congested) logEvent(null, `Link congested: ${stalledFeeds} feeds stalled within a minute`, 'warn');
+      if (!wall.congested) logEvent(null, `Link congested: ${stalledFeeds} feeds stalled within a minute`, 'bad');
       wall.lastCongestedAt = now;
       if (boosted > 0 && now - wall.lastCapChangeAt > SHED_GAP_MS) {
         wall.boostCap = boosted - 1;
@@ -1034,8 +1320,8 @@
       }
     } else if (Number.isFinite(wall.boostCap)
       && now - wall.lastCongestedAt > RESTORE_CALM_MS && now - wall.lastCapChangeAt > RESTORE_CALM_MS) {
-      const priorities = [...tiles.values()].filter((t) => t.stream.priority).length;
-      wall.boostCap = wall.boostCap + 1 >= priorities ? Infinity : wall.boostCap + 1;
+      const wanting = [...tiles.values()].filter((t) => t.wantsBoost(now)).length;
+      wall.boostCap = wall.boostCap + 1 >= wanting ? Infinity : wall.boostCap + 1;
       wall.lastCapChangeAt = now;
       logEvent(null, 'Link calm for 5 min: restoring one priority boost');
     }
@@ -1065,6 +1351,7 @@
     prev?.render();
     tile.render();
     renderFeedSheet();
+    if (settings.ytApiKey.trim()) loadViewerHistory(tile);
   }
 
   function closeFeedSheet() {
@@ -1080,7 +1367,7 @@
   function setFocus(tile, on) {
     tile.focused = on;
     tile.el.classList.toggle('focused', on);
-    tile.applySize();
+    tile.fit();
     try {
       if (tile.ready && tile.player) {
         if (on) tile.player.showVideoInfo();
@@ -1109,15 +1396,18 @@
     }));
   }
 
-  // Sparkline over the last HISTORY_MS; gaps where the value was unknown.
-  function drawSpark(svg, samples, { ceil = 0, threshold } = {}) {
+  // Sparkline over the last `span` ms; gaps where the value was unknown. `fit` scales the
+  // y axis to the data's own range (audience swings are small next to the total).
+  function drawSpark(svg, samples, { ceil = 0, threshold, span = HISTORY_MS, fit = false, label = (v) => `${v.toFixed(1)}s` } = {}) {
     const W = 300;
     const H = 44;
     const now = Date.now();
     const known = samples.filter((p) => p.v != null);
     const max = Math.max(ceil, ...known.map((p) => p.v)) || 1;
-    const x = (t) => (W - ((now - t) / HISTORY_MS) * W).toFixed(1);
-    const y = (v) => (H - 3 - (Math.min(v, max) / max) * (H - 6)).toFixed(1);
+    const min = fit && known.length ? Math.min(...known.map((p) => p.v)) : 0;
+    const range = max - min || 1;
+    const x = (t) => (W - ((now - t) / span) * W).toFixed(1);
+    const y = (v) => (H - 3 - ((Math.min(v, max) - min) / range) * (H - 6)).toFixed(1);
     const NS = 'http://www.w3.org/2000/svg';
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     const parts = [];
@@ -1152,7 +1442,7 @@
     svg.replaceChildren(...nodes);
     if (!known.length) return '';
     const vals = known.map((p) => p.v);
-    return `min ${Math.min(...vals).toFixed(1)}s · max ${Math.max(...vals).toFixed(1)}s`;
+    return `min ${label(Math.min(...vals))} · max ${label(Math.max(...vals))}`;
   }
 
   function renderFeedSheet() {
@@ -1179,10 +1469,12 @@
       ['Status', detail, tone === 'idle' ? '' : tone],
       ['Lag behind real time', t.latency == null ? null : `${t.latency.toFixed(1)}s`],
       ['Buffer health', buf == null ? null : `${buf.toFixed(1)}s ahead`,
-        buf == null ? '' : buf < BUFFER_CRIT_S ? 'bad' : buf < BUFFER_LOW_S ? 'warn' : 'ok'],
+        buf == null ? '' : buf < BUFFER_LOW_S ? 'bad' : 'ok'],
       ['Drift from best lag', t.drift == null ? null : `+${Math.max(0, t.drift).toFixed(1)}s (best ${t.baseline.toFixed(1)}s)`,
         t.drift == null ? '' : t.drift < t2 / 2 ? '' : t.drift < t2 ? 'warn' : 'bad'],
-      ['Stalls', `${t.stats.stalls} · ${((t.stats.stallMs + ongoing) / 1000).toFixed(1)}s total`, t.stats.stalls ? 'warn' : ''],
+      ['Stalls', `${t.stats.stalls} · ${((t.stats.stallMs + ongoing) / 1000).toFixed(1)}s total`, t.stallFlagged(now) ? 'bad' : ''],
+      ['Last stall', ongoing ? 'Now' : t.stats.lastStallAt ? `${fmtDuration(now - t.stats.lastStallAt)} ago` : 'None',
+        t.stallFlagged(now) ? 'bad' : ''],
       ['Stall rate', hoursOnWall > 0.05 ? `${(t.stats.stalls / hoursOnWall).toFixed(1)} per hour` : null],
       ['Smooth catch-ups', `${t.stats.catchups} at ${CATCHUP_RATE}×`],
       ['Jumps to live', String(t.stats.resyncs)],
@@ -1204,7 +1496,7 @@
     fillKv($('#fs-network'), [
       ['Streaming now', t.quality ? QUALITY[t.quality].label : null],
       ['Best the source offers', best ? QUALITY[best].label : null],
-      ['Render target', `${QUALITY[t.targetQuality()].label} · ${t.boosted ? 'priority boost' : 'tile size'}`],
+      ['Render target', `${QUALITY[t.targetQuality()].label} · ${t.boosted ? (t.stream.priority ? 'priority boost' : 'on screen') : 'tile size'}`],
       ['Bitrate', t.mounted && !t.error ? `${t.estMbps().toFixed(1)} Mbps` : null, '', 'Estimated'],
       ['Priority', !t.stream.priority ? 'Off' : t.boosted ? 'Boosted' : `Held · ${t.heldReason || 'waiting'}`,
         t.stream.priority && !t.boosted ? 'warn' : ''],
@@ -1225,63 +1517,135 @@
       ['Playback ID (CPN)', data.cpn || null],
     ]);
 
-    const yt = ytStats.get(t.stream.source.id);
-    const hasKey = !!settings.ytApiKey.trim();
-    setText($('#fs-aud-tag'), hasKey && yt ? 'Measured' : 'N·A');
-    fillKv($('#fs-audience'), [
-      ['Watching now', fmtInt(yt?.viewers)],
-      ['Total views', fmtInt(yt?.views)],
-      ['Likes', fmtInt(yt?.likes)],
-      ['Went live', yt?.startedAt ? `${new Date(yt.startedAt).toLocaleTimeString()} · ${fmtDuration(now - Date.parse(yt.startedAt))} ago` : null],
-      ['Scheduled for', yt?.scheduledAt ? new Date(yt.scheduledAt).toLocaleString() : null],
-    ]);
-    setText($('#fs-aud-hint'), !hasKey
-      ? 'Add a YouTube Data API key in Settings to see live viewers, views, likes and start time. Without one these are not available; nothing here is guessed.'
-      : ytStatsError ? `YouTube Data API: ${ytStatsError}`
-        : yt ? `Reported by YouTube · updated ${fmtDuration(now - ytStatsAt)} ago` : 'Waiting for the first YouTube Data API response.');
-
+    renderAnalytics(t, now);
     $('#fs-log').replaceChildren(...logItems(events.filter((e) => e.id === t.stream.id).slice(0, 12)));
   }
 
-  // ---------------------------------------------------------------------------
-  // YouTube Data API (optional): audience numbers for every feed, 50 ids per call
-  // ---------------------------------------------------------------------------
-  async function pollYouTubeStats() {
-    const key = settings.ytApiKey.trim();
-    if (!key || !tiles.size) return;
-    const ids = [...new Set([...tiles.values()].map((t) => t.stream.source.id))];
-    try {
-      for (let i = 0; i < ids.length; i += 50) {
-        const params = new URLSearchParams({
-          part: 'liveStreamingDetails,statistics',
-          id: ids.slice(i, i + 50).join(','),
-          fields: 'items(id,statistics(viewCount,likeCount),liveStreamingDetails(concurrentViewers,actualStartTime,scheduledStartTime))',
-          key,
-        });
-        const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?${params}`);
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error?.message || `HTTP ${res.status}`);
-        for (const item of body.items || []) {
-          ytStats.set(item.id, {
-            viewers: item.liveStreamingDetails?.concurrentViewers ?? null,
-            views: item.statistics?.viewCount ?? null,
-            likes: item.statistics?.likeCount ?? null,
-            startedAt: item.liveStreamingDetails?.actualStartTime ?? null,
-            scheduledAt: item.liveStreamingDetails?.scheduledStartTime ?? null,
-          });
-        }
-      }
-      ytStatsAt = Date.now();
-      ytStatsError = '';
-    } catch (err) {
-      const msg = String(err.message || err).replace(/<[^>]*>/g, '');
-      if (msg !== ytStatsError) logEvent(null, `YouTube Data API: ${msg}`, 'warn');
-      ytStatsError = msg;
-    }
-    updateSummary();
-    renderFeedSheet();
+  // YouTube analytics for one feed: what YouTube reports now, plus the backend's audience
+  // history (peak, average, lowest, trend, growth per hour) since it started tracking.
+  function renderAnalytics(t, now) {
+    const id = t.stream.source.id;
+    const ytEntry = ytStats.get(id);
+    const yt = ytEntry?.missing ? null : ytEntry;
+    const a = yt?.analysis || {};
+    const hasKey = !!settings.ytApiKey.trim();
+    $('#fs-key-form').hidden = hasKey;
+    $('#fs-viewers-fig').hidden = !hasKey;
+    setText($('#fs-aud-tag'), hasKey && yt ? 'Measured' : 'N·A');
+    const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const rate = (v) => (v == null ? '' : ` · ${v >= 0 ? '+' : '−'}${fmtCount(Math.abs(v))}/h`);
+    const trend = a.trendPct == null ? '' : ` · ${a.trendPct > 0 ? '+' : a.trendPct < 0 ? '−' : '±'}${Math.abs(a.trendPct)}% in ${a.trendMins} min`;
+    fillKv($('#fs-audience'), hasKey ? [
+      ['Watching now', yt?.viewers != null ? `${fmtInt(yt.viewers)}${trend}`
+        : yt?.endedAt ? 'Ended: the broadcast is over' : yt?.broadcast === 'live' ? 'Hidden or 0: YouTube leaves it out' : null],
+      ['Peak', a.peak != null ? `${fmtInt(a.peak)} at ${time(a.peakAt)}` : null],
+      ['Average', fmtInt(a.avg)],
+      ['Lowest', fmtInt(a.low)],
+      ['Likes', yt?.likes != null ? `${fmtInt(yt.likes)}${rate(a.likesPerHour)}` : null],
+      ['Views', yt?.views != null ? `${fmtInt(yt.views)}${rate(a.viewsPerHour)}` : null],
+      ['Like rate', yt?.likes != null && yt?.views ? `${((yt.likes / yt.views) * 100).toFixed(2)}% of views` : null],
+      ['Comments', yt?.comments != null ? fmtInt(yt.comments) : yt ? 'Off or hidden' : null],
+      ['Went live', yt?.startedAt ? `${time(yt.startedAt)} · ${fmtDuration((yt.endedAt ? Date.parse(yt.endedAt) : now) - Date.parse(yt.startedAt))}${yt.endedAt ? ' (ended)' : ''}` : null],
+      ['Scheduled for', yt?.scheduledAt && !yt.startedAt ? new Date(yt.scheduledAt).toLocaleString() : null],
+      ['Channel', yt?.channelTitle ? `${yt.channelTitle}${yt.subscribers != null ? ` · ${fmtCount(yt.subscribers)} subscribers` : ''}` : null],
+      ['Visibility', yt?.privacy ? yt.privacy[0].toUpperCase() + yt.privacy.slice(1) : null, yt?.privacy === 'private' ? 'bad' : ''],
+      ['Embedding', yt?.embeddable == null ? null : yt.embeddable ? 'Allowed' : 'Off: this wall cannot play it', yt?.embeddable === false ? 'bad' : ''],
+      ['Definition', yt?.definition ? yt.definition.toUpperCase() : null],
+      ['Live chat', yt?.chat == null ? null : yt.chat ? 'On' : 'Off'],
+      ['Recording length', yt?.lengthSec ? fmtClock(yt.lengthSec) : null],
+      ['Tracked since', a.trackedSince ? `${time(a.trackedSince)} · ${a.samples} readings` : null],
+    ] : []);
+
+    const series = viewerSeries.id === id ? viewerSeries.series : [];
+    const span = Math.max(10 * 60000, series.length ? now - series[0][0] : 0);
+    setText($('#fs-viewers-range'), drawSpark($('#fs-spark-viewers'), series.map((p) => ({ t: p[0], v: p[1] })), { span, fit: true, label: fmtCount }));
+    setText($('#fs-viewers-span'), series.length ? `last ${fmtDuration(span)}` : 'no readings yet');
+
+    setText($('#fs-aud-hint'), !hasKey
+      ? 'Paste a YouTube Data API key to see live viewers, likes, views and comments for every feed, with peak, average and trend. Without one nothing here is shown; nothing is guessed.'
+      : ytState?.status === 'error' ? `YouTube Data API: ${ytState.error}`
+        : ytEntry?.missing ? 'YouTube returned nothing for this ID: the video is deleted, private or mistyped.'
+          : yt ? `Reported by YouTube · updated ${fmtDuration(now - ytStatsAt)} ago · polled once a minute by the backend`
+            : 'Waiting for the first YouTube Data API response.');
   }
 
+  async function loadViewerHistory(tile) {
+    const id = tile.stream.source.id;
+    try {
+      const res = await fetch(`/api/youtube/history?id=${encodeURIComponent(id)}`);
+      if (!res.ok) return;
+      viewerSeries = { id, series: (await res.json()).series || [] };
+      if (inspected === tile) renderFeedSheet();
+    } catch {
+      // backend offline: the chart stays as it was
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // YouTube Data API (optional): the backend polls once a minute for every window and
+  // keeps the audience history; this page shows what it reports.
+  // ---------------------------------------------------------------------------
+  function applyYouTube(state) {
+    ytState = state;
+    ytChecking = false;
+    backendYoutube = true;
+    ytStats.clear();
+    for (const [id, v] of Object.entries(state.videos || {})) ytStats.set(id, v);
+    ytStatsAt = state.updatedAt || 0;
+    const err = state.status === 'error' ? state.error : '';
+    if (err && err !== ytStatsError) logEvent(null, `YouTube Data API: ${err}`, 'warn');
+    ytStatsError = err;
+    updateSummary();
+    renderYtStatus();
+    const now = Date.now();
+    for (const t of tiles.values()) t.renderSide(now);
+    if (inspected) loadViewerHistory(inspected); // re-renders the sheet with the new reading
+  }
+
+  // Saved from Settings (Save key / Enter) or the Stats sheet. An empty key turns stats off.
+  function saveYtKey(raw) {
+    settings.ytApiKey = String(raw || '').trim();
+    store.save(); // hands the key to the backend, which checks it with YouTube within seconds
+    applySetting('ytApiKey');
+    if (backendYoutube !== true) probeYouTubeBackend();
+  }
+
+  // Does the running backend poll YouTube? One started before that existed answers 404,
+  // and would otherwise leave the key on "Checking…" forever.
+  async function probeYouTubeBackend() {
+    try {
+      const res = await fetch('/api/youtube', { cache: 'no-store' });
+      backendYoutube = res.ok;
+      if (res.ok && !ytState) applyYouTube(await res.json());
+    } catch {
+      // backend offline: the status line says so
+    }
+    renderYtStatus();
+  }
+
+  // The key's state under the input in Settings: working, checking, or exactly what's wrong.
+  function renderYtStatus() {
+    const $s = $('#yt-status');
+    const hasKey = !!settings.ytApiKey.trim();
+    let text;
+    let tone = '';
+    if (!hasKey) text = 'No key: audience numbers are off.';
+    else if (backendYoutube === false) {
+      [text, tone] = ['Key saved, but the running backend is older than YouTube support. Close the black "IXG Wall backend" window, then start the wall again (Start IXG Wall.cmd or the exe).', 'bad'];
+    } else if (!backend.connected) [text, tone] = ['Backend offline: the backend checks the key and polls YouTube.', 'warn'];
+    else if (ytChecking || !ytState || ytState.status === 'off') text = 'Checking the key with YouTube…';
+    else if (ytState.status === 'error') [text, tone] = [ytState.error, 'bad'];
+    else {
+      const n = Object.keys(ytState.videos || {}).length;
+      // videos.list: 1 unit per 50 feeds per poll; channels.list: 1 unit every 10 minutes.
+      const perDay = Math.ceil(86400 / settings.ytPollSec) * Math.max(1, Math.ceil(n / 50)) + 144;
+      text = `Working · ${n} video${n === 1 ? '' : 's'} · updated ${fmtDuration(Date.now() - ytState.updatedAt)} ago · every ${settings.ytPollSec} s ≈ ${fmtInt(perDay)} of ${fmtInt(ytState.units.limit)} quota units a day · ${fmtInt(ytState.units.used)} used today`;
+      tone = perDay > ytState.units.limit ? 'warn' : 'ok';
+      if (tone === 'warn') text += ' · this rate runs out before the day ends: poll less often';
+    }
+    setText($s, text);
+    setTone($s, tone);
+  }
   // ---------------------------------------------------------------------------
   // Performance governor: keeps the laptop below the point where video starts to stutter.
   // Inputs: backend CPU/memory and the browser's own CPU pressure signal. Actions, while
@@ -1314,8 +1678,8 @@
       }
     } else if (Number.isFinite(perf.cap)
       && now - perf.lastHotAt > PERF_RESTORE_CALM_MS && now - perf.lastCapChangeAt > PERF_RESTORE_CALM_MS) {
-      const priorities = [...tiles.values()].filter((x) => x.stream.priority).length;
-      perf.cap = perf.cap + 1 >= priorities ? Infinity : perf.cap + 1;
+      const wanting = [...tiles.values()].filter((x) => x.wantsBoost(now)).length;
+      perf.cap = perf.cap + 1 >= wanting ? Infinity : perf.cap + 1;
       perf.lastCapChangeAt = now;
       logEvent(null, 'Laptop calm for a minute: restoring one priority boost');
     }
@@ -1334,7 +1698,13 @@
       }
       updateSummary();
       renderPerf();
+      if (!$drawer.hidden) renderYtStatus();
     };
+    // (Re)connected, possibly to a newly started backend: does this one poll YouTube?
+    source.onopen = () => probeYouTubeBackend();
+    source.addEventListener('youtube', (e) => {
+      try { applyYouTube(JSON.parse(e.data)); } catch { /* malformed event: keep the last report */ }
+    });
     // Another window saved the wall: offer to load it rather than silently diverge.
     source.addEventListener('wall', (e) => {
       let data;
@@ -1449,6 +1819,8 @@
     if (!ok || !tiles.has(tile.stream.id)) return;
     if (inspected === tile) closeFeedSheet();
     tile.unmount();
+    tileObserver.unobserve(tile.el);
+    viewObserver.unobserve(tile.el);
     tile.el.remove();
     tiles.delete(tile.stream.id);
     const queued = loadQueue.indexOf(tile);
@@ -1486,46 +1858,132 @@
     list.forEach((t, i) => t.scheduleReload(ms > 0 ? (ms * (i + 1)) / list.length : undefined));
   }
 
-  // Pick the column count that gives each 16:9 video the most visible area,
-  // allowing for the info bar under every video.
-  function updateLayout() {
-    const n = tiles.size;
-    document.body.style.setProperty('--wall-top', `${Math.round($grid.getBoundingClientRect().top)}px`);
-    $empty.hidden = n > 0;
-    if (!n) return;
-    let cols;
+  // Pick the column count that gives each 16:9 video the most visible area, allowing for
+  // the info bar under every video (slim when a tile has room for the side card).
+  function videoWidthIn(tileW, tileH) {
+    const withSide = ((tileH - BAR_SLIM_PX) * 16) / 9;
+    if (settings.showStats && tileW - withSide >= SIDE_MIN_PX) return withSide;
+    const bar = settings.showStats ? BAR_FULL_PX : BAR_SLIM_PX;
+    return Math.min(tileW, (Math.max(0, tileH - bar) * 16) / 9);
+  }
+
+  const GRID_GAP_PX = 2; // .grid gap
+
+  // The wall's geometry for n feeds in a W×H area. Fit mode squeezes every feed on screen
+  // (column count chosen for the biggest video). Scroll mode keeps every tile one fixed,
+  // legible size, a 16:9 video beside its stats card, and the wall scrolls for the rest.
+  function computeLayout(W, H, n) {
+    if (settings.layoutMode === 'scroll') {
+      const cols = settings.scrollColumns;
+      const tileW = (W - (cols - 1) * GRID_GAP_PX) / cols;
+      const card = settings.showStats ? Math.max(SIDE_MIN_PX + 40, Math.round((tileW * settings.cardPct) / 100)) : 0;
+      const videoW = tileW - card;
+      const videoH = (videoW * 9) / 16;
+      const tileH = Math.round(videoH + BAR_SLIM_PX);
+      const rowsOnScreen = Math.max(1, Math.floor((H + GRID_GAP_PX) / (tileH + GRID_GAP_PX)));
+      return { mode: 'scroll', cols, rows: Math.max(1, Math.ceil(n / cols)), tileW, tileH, card, videoW, videoH, onScreen: Math.min(n, rowsOnScreen * cols) };
+    }
+    let cols = 1;
     if (settings.layout !== 'auto') {
       cols = Math.min(n, Number(settings.layout) || 1);
     } else {
-      const W = $grid.clientWidth || 16;
-      const H = $grid.clientHeight || 9;
-      const bar = $grid.querySelector('.info')?.offsetHeight || 0;
       let best = 0;
-      cols = 1;
       for (let c = 1; c <= n; c++) {
-        const r = Math.ceil(n / c);
-        const w = Math.min(W / c, Math.max(0, H / r - bar) * (16 / 9));
+        const w = videoWidthIn(W / c, H / Math.ceil(n / c));
         if (w > best + 0.5) {
           best = w;
           cols = c;
         }
       }
     }
-    $grid.style.setProperty('--cols', cols);
-    $grid.style.setProperty('--rows', Math.ceil(n / cols));
+    const rows = Math.ceil(n / cols);
+    const tileW = (W - (cols - 1) * GRID_GAP_PX) / cols;
+    const tileH = (H - (rows - 1) * GRID_GAP_PX) / rows;
+    const videoW = videoWidthIn(tileW, tileH);
+    const sideOn = settings.showStats && tileW - ((tileH - BAR_SLIM_PX) * 16) / 9 >= SIDE_MIN_PX;
+    return { mode: 'fit', cols, rows, tileW, tileH, card: sideOn ? tileW - videoW : 0, videoW, videoH: (videoW * 9) / 16, onScreen: n };
+  }
+
+  function updateLayout() {
+    const n = tiles.size;
+    document.body.style.setProperty('--wall-top', `${Math.round($grid.getBoundingClientRect().top)}px`);
+    document.body.style.setProperty('--sheet-top', `${document.querySelector('.topbar').offsetHeight}px`);
+    $empty.hidden = n > 0;
+    renderLayoutPreview();
+    if (!n) return;
+    const L = computeLayout($grid.clientWidth || 16, $grid.clientHeight || 9, n);
+    $grid.classList.toggle('scroll', L.mode === 'scroll');
+    $grid.style.setProperty('--cols', L.cols);
+    $grid.style.setProperty('--rows', L.rows);
+    $grid.style.setProperty('--tile-h', `${L.tileH}px`);
     for (const t of tiles.values()) t.applySize();
   }
 
+  // Settings → Layout: a to-scale miniature of the wall as configured. Each tile shows its
+  // video and stats card; tiles past the bottom of the screen are faded under a fold line.
+  function renderLayoutPreview() {
+    const $box = $('#layout-preview');
+    if (!$box || $drawer.hidden) return;
+    const W = $grid.clientWidth || 1600;
+    const H = $grid.clientHeight || 860;
+    const n = tiles.size || 6;
+    const L = computeLayout(W, H, n);
+    const s = $box.clientWidth / W;
+    const step = L.tileH + GRID_GAP_PX;
+    const shown = Math.min(n, L.mode === 'scroll' ? L.onScreen + L.cols : n); // one row past the fold
+    const boxH = L.mode === 'scroll' ? Math.min(Math.ceil(shown / L.cols) * step, H + step * 0.6) : H;
+    $box.style.height = `${Math.round(boxH * s)}px`;
+    $box.style.setProperty('--fold', `${Math.round(H * s)}px`);
+    $box.classList.toggle('scrolls', L.mode === 'scroll' && n > L.onScreen);
+    const px = (v) => `${(v * s).toFixed(1)}px`;
+    const items = [];
+    for (let i = 0; i < shown; i++) {
+      const col = i % L.cols;
+      const row = Math.floor(i / L.cols);
+      const el = document.createElement('div');
+      el.className = 'lp-tile';
+      el.style.left = px(col * (L.tileW + GRID_GAP_PX));
+      el.style.top = px(row * step);
+      el.style.width = px(L.tileW);
+      el.style.height = px(L.tileH);
+      if ((row + 1) * step - GRID_GAP_PX > H + 1) el.classList.add('below');
+      const video = document.createElement('div');
+      video.className = 'lp-video';
+      video.style.width = px(L.videoW);
+      video.style.height = px(L.mode === 'scroll' ? L.videoH : L.tileH - (L.card ? BAR_SLIM_PX : settings.showStats ? BAR_FULL_PX : BAR_SLIM_PX));
+      el.append(video);
+      if (L.card) {
+        const card = document.createElement('div');
+        card.className = 'lp-card';
+        card.style.width = px(L.card);
+        card.style.height = video.style.height;
+        el.append(card);
+      }
+      items.push(el);
+    }
+    $box.replaceChildren(...items);
+
+    const q = L.mode === 'scroll' ? QUALITY[settings.feedQuality].label : null;
+    const size = `${Math.round(L.videoW)} × ${Math.round(L.videoH)} px video${L.card ? ` · ${Math.round(L.card)} px stats card` : ''}`;
+    setText($('#layout-summary'), L.mode === 'scroll'
+      ? `${tiles.size ? `${L.onScreen} of ${n} feeds on screen${n > L.onScreen ? `, scroll for ${n - L.onScreen} more` : ''}` : `${L.onScreen} feeds fit on screen`} · ${size} · on-screen feeds stream at ${q}`
+      : `All ${n} feeds on screen in ${L.cols} column${L.cols === 1 ? '' : 's'} · ${size} · 480p unless priority`);
+    for (const el of $drawer.querySelectorAll('[data-layout-mode]')) el.hidden = el.dataset.layoutMode !== settings.layoutMode;
+    setText($('#card-pct-out'), `${settings.cardPct}%`);
+  }
   function updateSummary() {
     const list = [...tiles.values()];
     const playing = list.filter((t) => t.ready && t.ps === PS.PLAYING);
     const issues = list.filter((t) => t.error || t.ps === PS.BUFFERING || t.ps === PS.PAUSED).length;
     const lags = playing.map((t) => t.latency).filter((v) => v != null);
     $readout.playing.textContent = `${playing.length}/${list.length}`;
-    $readout.playing.dataset.tone = playing.length < list.length ? 'warn' : '';
+    // Red when any feed is buffering or failed; amber only while feeds are still starting.
+    $readout.playing.dataset.tone = list.some((t) => t.error || t.ps === PS.BUFFERING) ? 'bad'
+      : playing.length < list.length ? 'warn' : '';
     $readout.latency.textContent = lags.length ? `${median(lags).toFixed(1)}s` : '—';
     $readout.issues.textContent = String(issues);
-    $readout.issues.dataset.tone = list.some((t) => t.error) ? 'bad' : issues ? 'warn' : '';
+    // Errors and buffering are red; only paused feeds (which resume themselves) are amber.
+    $readout.issues.dataset.tone = list.some((t) => t.error || t.ps === PS.BUFFERING) ? 'bad' : issues ? 'warn' : '';
     const load = list.reduce((sum, t) => sum + t.estMbps(), 0);
     const budget = settings.bandwidthMbps;
     setText($readout.load, list.length ? `${load.toFixed(1)}${budget ? `/${budget}` : ''} Mbps` : '—');
@@ -1551,6 +2009,10 @@
       .map((id) => ytStats.get(id)?.viewers).filter((v) => v != null);
     $('#r-ccv-wrap').hidden = !settings.ytApiKey.trim() || !viewerCounts.length;
     $('#r-ccv').textContent = viewerCounts.reduce((sum, v) => sum + Number(v), 0).toLocaleString('en-US');
+    const total = ytState?.total;
+    $('#r-ccv-wrap').title = total?.peak != null
+      ? `Watching across all feeds, reported by YouTube · peak ${fmtInt(total.peak)} at ${new Date(total.peakAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · average ${fmtInt(total.avg)}`
+      : 'Watching across all feeds, reported by YouTube';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
     $liveBadge.hidden = !playing.some((t) => t.isLive);
   }
@@ -1576,14 +2038,49 @@
     }, settings.checkIntervalSec * 1000);
   }
 
+  // The player API, retried until it loads: a dropped connection at startup must not leave
+  // every feed on "Loading" until someone reloads the page. Retries back off to once a minute.
   function loadYouTubeApi() {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (window.YT && window.YT.Player) return resolve();
-      window.onYouTubeIframeAPIReady = resolve;
-      const script = document.createElement('script');
-      script.src = 'https://www.youtube.com/iframe_api';
-      script.onerror = () => reject(new Error('Could not load the YouTube player API. Check the internet connection, then reload the page.'));
-      document.head.append(script);
+      let attempt = 0;
+      let timer = 0;
+      let failing = false;
+      window.onYouTubeIframeAPIReady = () => {
+        clearTimeout(timer);
+        if (failing) {
+          $banner.hidden = true;
+          logEvent(null, 'YouTube player loaded');
+        }
+        resolve();
+      };
+      const fail = () => {
+        clearTimeout(timer);
+        failing = true;
+        const delay = Math.min(60, 5 * 2 ** attempt++);
+        const retry = document.createElement('button');
+        retry.className = 'btn btn-outline btn-xs';
+        retry.textContent = 'Try again';
+        retry.addEventListener('click', load);
+        $banner.replaceChildren(`Could not load the YouTube player: no connection to YouTube. Trying again automatically in ${delay} s. `, retry);
+        $banner.hidden = false;
+        timer = setTimeout(load, delay * 1000);
+      };
+      function load() {
+        clearTimeout(timer);
+        document.querySelector('script[data-yt-api]')?.remove();
+        // A half-loaded attempt leaves a YT stub that stops the script loading the player again.
+        // (Assigned, not deleted: the loader declares YT with var, and strict mode can't delete it.)
+        if (window.YT && !window.YT.Player) window.YT = undefined;
+        const script = document.createElement('script');
+        script.src = 'https://www.youtube.com/iframe_api';
+        script.dataset.ytApi = '';
+        script.onerror = fail;
+        // The loader can arrive while the player code it fetches next doesn't.
+        script.onload = () => { timer = setTimeout(() => { if (!(window.YT && window.YT.Player)) fail(); }, 20000); };
+        document.head.append(script);
+      }
+      load();
     });
   }
 
@@ -1645,10 +2142,7 @@
       const tile = addTile(stream);
       logEvent(tile, `Added (${source.id})`);
     }
-    if (valid.length) {
-      store.save();
-      if (settings.ytApiKey) setTimeout(pollYouTubeStats, 1500);
-    }
+    if (valid.length) store.save(); // the backend polls YouTube for the new feeds within seconds
     if (!rejected.length) {
       $source.value = '';
       $label.value = '';
@@ -1688,6 +2182,8 @@
     if (open) {
       renderLog();
       renderPerf();
+      renderYtStatus();
+      renderLayoutPreview();
     }
   }
   $settingsToggle.addEventListener('click', () => setDrawer($drawer.hidden));
@@ -1740,20 +2236,35 @@
   function applySetting(key) {
     if (key === 'checkIntervalSec' && ytReady) restartLoop();
     if (key === 'hardReloadMin') restagger();
-    if (key === 'layout') updateLayout();
+    if (['layout', 'layoutMode', 'scrollColumns', 'cardPct', 'feedQuality'].includes(key)) {
+      updateLayout();
+      if (ytReady) allocate();
+    }
+    if (key === 'feedQuality' || key === 'layoutMode') {
+      // Lowering what on-screen feeds stream at takes a refresh; raising it applies live.
+      for (const t of tiles.values()) {
+        if (t.quality && rank(t.quality) > rank(t.targetQuality())) t.reload('layout quality lowered');
+      }
+    }
     if (key === 'showStats') {
       document.body.classList.toggle('hide-stats', !settings.showStats);
       updateLayout();
+      for (const t of tiles.values()) t.fit();
     }
     if (key === 'loadConcurrency') pumpQueue();
     if (key === 'ytApiKey') {
+      // Saving the wall hands the key to the backend, which checks it within seconds.
       settings.ytApiKey = String(settings.ytApiKey).trim();
+      syncSettingInputs();
       ytStats.clear();
       ytStatsError = '';
-      pollYouTubeStats();
+      ytChecking = !!settings.ytApiKey;
+      renderYtStatus();
       updateSummary();
+      renderFeedSheet();
     }
     if (key === 'bandwidthMbps') allocate();
+    if (key === 'ytPollSec') renderYtStatus(); // saving the wall hands the new interval to the backend
     if (key === 'priorityQuality') {
       for (const t of tiles.values()) {
         t.applySize();
@@ -1771,7 +2282,21 @@
       if (input.type === 'checkbox') input.checked = settings[key];
       else input.value = settings[key];
     });
+    $('#yt-key-input').value = settings.ytApiKey;
   }
+
+  // YouTube API key: saved with the Save key button or Enter, not on every keystroke.
+  $('#yt-key-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveYtKey($('#yt-key-input').value);
+  });
+  $('#yt-key-show').addEventListener('click', (e) => {
+    const input = $('#yt-key-input');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    e.currentTarget.textContent = show ? 'Hide' : 'Show';
+    e.currentTarget.setAttribute('aria-pressed', String(show));
+  });
 
   $drawer.querySelectorAll('[data-setting]').forEach((input) => {
     const key = input.dataset.setting;
@@ -1805,9 +2330,14 @@
     streams.forEach(addTile);
     updateLayout();
     updateSummary();
-    pollYouTubeStats();
-    setInterval(pollYouTubeStats, YT_STATS_EVERY_MS);
-    connectBackend();
+    connectBackend(); // also brings the YouTube numbers, polled by the backend
+    $('#fs-key-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const key = $('#fs-key').value.trim();
+      if (!key) return;
+      $('#fs-key').value = '';
+      saveYtKey(key);
+    });
     watchPressure();
     detectDecode();
     return ytApi;

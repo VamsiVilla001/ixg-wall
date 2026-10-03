@@ -1,20 +1,20 @@
-# IXG Multiviewer
+# IXG Wall
 
 A YouTube live monitoring wall for 20–30 feeds, built on the SKWAD design system (Live mode).
 
 ## Run it
 
-Double-click **`dist\IXG Multiviewer.exe`**. It starts the backend and opens the wall in its own window. Keep the black backend window open while the wall runs. The exe is self-contained: copy it to any Windows laptop with Chrome or Edge; Node isn't needed there.
+Double-click **`dist\IXG Wall.exe`**. It starts the backend and opens the wall in its own window. Keep the black backend window open while the wall runs. The exe is self-contained: copy it to any Windows laptop with Chrome or Edge; Node isn't needed there.
 
 - Double-clicking it again while the wall runs just brings back the wall window.
-- `IXG Multiviewer.exe --serve`: backend only. Open http://localhost:8080 in any browser.
-- Every window shares one wall. Feeds and settings are kept in `%LOCALAPPDATA%\IXG Multiviewer\wall.json`, so the exe and the `node` version see the same wall.
+- `IXG Wall.exe --serve`: backend only. Open http://localhost:8080 in any browser.
+- Every window shares one wall. Feeds and settings are kept in `%LOCALAPPDATA%\IXG Wall\wall.json`, so the exe and the `node` version see the same wall.
 
 From the project folder (needs Node 22+): `Start IXG Wall.cmd` or `npm run wall` opens the wall, and `npm start` serves it only.
 
 ## Build the exe
 
-`npm install` once, then `npm run build`. It writes `dist\IXG Multiviewer.exe` (~77 MB, mostly the embedded Node runtime). It bundles `server.js` and `backend\`, and embeds `public\` and the telemetry agent. Rebuild after changing any of them.
+`npm install` once, then `npm run build`. It writes `dist\IXG Wall.exe` (~77 MB, mostly the embedded Node runtime). It bundles `server.js` and `backend\`, and embeds `public\` and the telemetry agent. Rebuild after changing any of them.
 
 The exe is unsigned. Copied to another laptop over the internet, Windows SmartScreen may ask once: click **More info → Run anyway**.
 
@@ -23,6 +23,7 @@ The exe is unsigned. Copied to another laptop over the internet, Windows SmartSc
 - **Serves the wall.** YouTube embeds won't play from `file://` pages.
 - **Runs the wall window.** It gets its own Chrome/Edge profile and app mode (no tab strip), with no throttling when other windows cover it. The window is restarted within ~3 s if the browser crashes; closing it on purpose leaves it closed.
 - **Measures the laptop** every 2 s and streams it to the wall: CPU, memory, real download/upload on the busiest network adapter, and the browser's load on the GPU video and 3D engines.
+- **Polls the YouTube Data API** for every feed, every 30 s by default (optional; paste a key under **Settings → YouTube API**, which also sets the interval). One poll serves every open window: every 30 s uses about 3,000 of the daily 10,000 quota units for up to 50 feeds. Besides viewers, likes, views and comments it reads each video's broadcast state (live, scheduled, ended), privacy, whether embedding is allowed, HD/SD and live chat, at no extra quota. It keeps a 24-hour viewer history in `%LOCALAPPDATA%\IXG Wall\youtube-history.json` for each feed's analytics: peak, average, lowest, 10-minute trend, likes and views per hour, like rate, channel subscribers.
 
 ## Benchmark: the lowest-spec wall laptop
 

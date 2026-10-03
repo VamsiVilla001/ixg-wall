@@ -1,4 +1,4 @@
-# IXG Multiviewer telemetry agent (Windows).
+# IXG Wall telemetry agent (Windows).
 # Prints one JSON line per interval: network throughput of the busiest adapter, and the
 # browsers' load on the GPU's video and 3D engines. CPU and memory are read by Node itself.
 # Counters stay open between samples, so a sample costs milliseconds, not a PDH query.

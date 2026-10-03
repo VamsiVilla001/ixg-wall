@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IXG Multiviewer</title>
+  <title>IXG Wall</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='1' fill='%23131210'/%3E%3Cpath d='M3 4h4v3H3zM9 4h4v3H9zM3 9h4v3H3z' fill='%23f2f0eb'/%3E%3Cpath d='M9 9h4v3H9z' fill='%23f58138'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/Manrope-500.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/JetBrainsMono-500.woff2" as="font" type="font/woff2" crossorigin>
@@ -13,7 +13,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-name">IXG</span><span class="brand-mark" aria-hidden="true"></span>
-      <span class="telemetry muted brand-sub">Multiviewer</span>
+      <span class="telemetry muted brand-sub">Wall</span>
     </div>
     <span id="live-badge" class="live-badge" hidden><span class="live-dot"></span>Live</span>
 
@@ -99,92 +99,145 @@
       </div>
       <button id="drawer-close" class="btn btn-outline btn-sm">Close</button>
     </div>
-    <section class="sheet-section">
-      <div class="section-head"><p class="telemetry muted">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
-      <dl class="kv" id="perf-kv"></dl>
-      <label class="field">
-        <span>Video decoding</span>
-        <select class="input select" id="decode-mode">
-          <option value="software">Software (CPU)</option>
-          <option value="hardware">Hardware (GPU)</option>
-        </select>
-      </label>
-      <p class="hint" id="decode-hint">Applies to the managed wall window and restarts it. On the benchmark laptop (Ryzen 5 4600H, Radeon graphics) software decoding dropped 0% of frames at 30 feeds; the GPU decoder dropped 4–7% at 24.</p>
-      <div class="perf-actions">
-        <button type="button" id="wall-launch" class="btn btn-outline btn-sm">Open managed wall window</button>
-      </div>
-    </section>
-    <section class="sheet-section">
-      <label class="field">
-        <span>Health check every</span>
-        <span class="field-unit"><input class="input input-num" type="number" data-setting="checkIntervalSec" min="1" max="30" step="1"> s</span>
-      </label>
-      <label class="switch-row">
-        <input class="switch" type="checkbox" role="switch" data-setting="autoResync">
-        <span>Auto-jump to live edge</span>
-      </label>
-      <label class="field">
-        <span>Jump when a feed falls behind by</span>
-        <span class="field-unit"><input class="input input-num" type="number" data-setting="driftThresholdSec" min="1" max="60" step="0.5"> s</span>
-      </label>
-      <p class="hint">Drift is measured against the lowest lag that feed reached since it loaded. Three jumps inside two minutes escalate to a full refresh. Anything over 90 s behind jumps regardless.</p>
-      <label class="field">
-        <span>Hard-refresh each feed every</span>
-        <span class="field-unit"><input class="input input-num" type="number" data-setting="hardReloadMin" min="0" max="1440" step="1"> min</span>
-      </label>
-      <p class="hint">Destroys and recreates the player, releasing its video buffer and memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
-      <label class="field">
-        <span>Layout</span>
-        <select class="input select" data-setting="layout">
-          <option value="auto">Auto</option>
-          <option value="1">1 column</option>
-          <option value="2">2 columns</option>
-          <option value="3">3 columns</option>
-          <option value="4">4 columns</option>
-          <option value="5">5 columns</option>
-          <option value="6">6 columns</option>
-        </select>
-      </label>
-      <label class="switch-row">
-        <input class="switch" type="checkbox" role="switch" data-setting="showStats">
-        <span>Show telemetry on feeds</span>
-      </label>
-    </section>
-    <section class="sheet-section">
-      <p class="telemetry muted section-title">Bandwidth &amp; loading</p>
-      <label class="field">
-        <span>Available bandwidth</span>
-        <span class="field-unit"><input class="input input-num" type="number" data-setting="bandwidthMbps" min="0" max="10000" step="5"> Mbps</span>
-      </label>
-      <p class="hint">Your link's download speed from a speed test. Priority feeds are only boosted while the wall's estimated load stays under 80% of it. 0 means unknown: boosts are granted and shed one at a time when several feeds stall together.</p>
-      <label class="field">
-        <span>Priority feeds stream up to</span>
-        <select class="input select" data-setting="priorityQuality">
-          <option value="hd720">720p</option>
-          <option value="hd1080">1080p</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>Start feeds</span>
-        <span class="field-unit"><input class="input input-num" type="number" data-setting="loadConcurrency" min="1" max="6" step="1"> at a time</span>
-      </label>
-      <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
-    </section>
-    <section class="sheet-section">
-      <p class="telemetry muted section-title">YouTube audience stats</p>
-      <label class="field field-stack">
-        <span>YouTube Data API key</span>
-        <input class="input" type="password" data-setting="ytApiKey" autocomplete="off" spellcheck="false" placeholder="e.g. AIzaSy…">
-      </label>
-      <p class="hint">Optional. Adds live viewers, views, likes and start time to each feed's stats, refreshed every minute (about 1,500 of the daily 10,000 quota units). Create the key in Google Cloud with the YouTube Data API v3 enabled, and restrict it to the referrer http://localhost:8080. It is stored in this browser only.</p>
-    </section>
-    <section class="sheet-section sheet-log">
-      <div class="log-head">
-        <p class="telemetry muted">Event log</p>
-        <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
-      </div>
-      <ol id="log" class="log"></ol>
-    </section>
+    <!-- Everything under the header scrolls; the header (and Close) stays put -->
+    <div class="sheet-body">
+      <section class="sheet-section" id="layout-settings">
+        <p class="telemetry muted section-title">Layout</p>
+        <!-- To-scale miniature of the wall as configured; app.js draws it -->
+        <div class="layout-preview" id="layout-preview" aria-hidden="true"></div>
+        <p class="hint layout-summary" id="layout-summary"></p>
+        <label class="field">
+          <span>Arrange feeds</span>
+          <select class="input select" data-setting="layoutMode">
+            <option value="scroll">Fixed columns, scroll</option>
+            <option value="fit">Fit all on screen</option>
+          </select>
+        </label>
+        <div data-layout-mode="scroll">
+          <label class="field">
+            <span>Columns</span>
+            <select class="input select" data-setting="scrollColumns">
+              <option value="1">1 column</option>
+              <option value="2">2 columns</option>
+              <option value="3">3 columns</option>
+              <option value="4">4 columns</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>On-screen feeds stream at</span>
+            <select class="input select" data-setting="feedQuality">
+              <option value="large">480p</option>
+              <option value="hd720">720p</option>
+              <option value="hd1080">1080p</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Stats card width</span>
+            <span class="field-unit"><input class="range" type="range" data-setting="cardPct" min="20" max="45" step="1"><output id="card-pct-out"></output></span>
+          </label>
+          <p class="hint">Every tile keeps one size, so feeds and stats stay legible however many there are; scroll the wall for the rest. Only feeds on screen stream at this quality. One scrolled away keeps playing and stays monitored, and drops back to 480p after a minute. If the laptop or link can't keep up, the quality is held back as for priority feeds.</p>
+        </div>
+        <div data-layout-mode="fit">
+          <label class="field">
+            <span>Columns</span>
+            <select class="input select" data-setting="layout">
+              <option value="auto">Auto</option>
+              <option value="1">1 column</option>
+              <option value="2">2 columns</option>
+              <option value="3">3 columns</option>
+              <option value="4">4 columns</option>
+              <option value="5">5 columns</option>
+              <option value="6">6 columns</option>
+            </select>
+          </label>
+          <p class="hint">Every feed stays on screen, so tiles shrink as you add feeds; 20–30 feeds stream at 480p.</p>
+        </div>
+        <label class="switch-row">
+          <input class="switch" type="checkbox" role="switch" data-setting="showStats">
+          <span>Show telemetry on feeds</span>
+        </label>
+      </section>
+      <section class="sheet-section" id="yt-settings">
+        <p class="telemetry muted section-title">YouTube API</p>
+        <form class="key-form" id="yt-key-form">
+          <label class="key-label" for="yt-key-input">YouTube Data API key</label>
+          <div class="key-row">
+            <input class="input" id="yt-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key, e.g. AIzaSy…">
+            <button type="button" class="btn btn-outline btn-sm" id="yt-key-show" aria-pressed="false" title="Show or hide the key">Show</button>
+            <button type="submit" class="btn btn-sm" id="yt-key-save">Save key</button>
+          </div>
+        </form>
+        <label class="field">
+          <span>Refresh every</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="ytPollSec" min="15" max="300" step="5"> s</span>
+        </label>
+        <p class="yt-status" id="yt-status" role="status"></p>
+        <p class="hint">Adds live viewers, likes, views and comments to every feed, and a viewer history with peak, average, lowest and trend: open a feed's Stats for the full analytics. Also privacy, embedding, HD/SD and live chat, at no extra quota. The backend polls YouTube once per interval for every open window: every 30 s uses about 3,000 of the daily 10,000 quota units for up to 50 feeds.</p>
+        <p class="hint"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials. Restrict it to the YouTube Data API; an address restriction must allow http://localhost:8080/*. The key is saved with the wall on this laptop (%LOCALAPPDATA%\IXG Wall), never in the project folder.</p>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
+        <dl class="kv" id="perf-kv"></dl>
+        <label class="field">
+          <span>Video decoding</span>
+          <select class="input select" id="decode-mode">
+            <option value="software">Software (CPU)</option>
+            <option value="hardware">Hardware (GPU)</option>
+          </select>
+        </label>
+        <p class="hint" id="decode-hint">Applies to the managed wall window and restarts it. On the benchmark laptop (Ryzen 5 4600H, Radeon graphics) software decoding dropped 0% of frames at 30 feeds; the GPU decoder dropped 4–7% at 24.</p>
+        <div class="perf-actions">
+          <button type="button" id="wall-launch" class="btn btn-outline btn-sm">Open managed wall window</button>
+        </div>
+      </section>
+      <section class="sheet-section">
+        <label class="field">
+          <span>Health check every</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="checkIntervalSec" min="1" max="30" step="1"> s</span>
+        </label>
+        <label class="switch-row">
+          <input class="switch" type="checkbox" role="switch" data-setting="autoResync">
+          <span>Auto-jump to live edge</span>
+        </label>
+        <label class="field">
+          <span>Jump when a feed falls behind by</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="driftThresholdSec" min="1" max="60" step="0.5"> s</span>
+        </label>
+        <p class="hint">Drift is measured against the lowest lag that feed reached since it loaded. Three jumps inside two minutes escalate to a full refresh. Anything over 90 s behind jumps regardless.</p>
+        <label class="field">
+          <span>Hard-refresh each feed every</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="hardReloadMin" min="0" max="1440" step="1"> min</span>
+        </label>
+        <p class="hint">Destroys and recreates the player, releasing its video buffer and memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
+      </section>
+      <section class="sheet-section">
+        <p class="telemetry muted section-title">Bandwidth &amp; loading</p>
+        <label class="field">
+          <span>Available bandwidth</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="bandwidthMbps" min="0" max="10000" step="5"> Mbps</span>
+        </label>
+        <p class="hint">Your link's download speed from a speed test. Priority feeds are only boosted while the wall's estimated load stays under 80% of it. 0 means unknown: boosts are granted and shed one at a time when several feeds stall together.</p>
+        <label class="field">
+          <span>Priority feeds stream up to</span>
+          <select class="input select" data-setting="priorityQuality">
+            <option value="hd720">720p</option>
+            <option value="hd1080">1080p</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Start feeds</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="loadConcurrency" min="1" max="6" step="1"> at a time</span>
+        </label>
+        <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
+      </section>
+      <section class="sheet-section sheet-log">
+        <div class="log-head">
+          <p class="telemetry muted">Event log</p>
+          <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
+        </div>
+        <ol id="log" class="log"></ol>
+      </section>
+    </div>
     <div class="halftone-fade-b sheet-ground" aria-hidden="true"></div>
   </aside>
 
@@ -226,7 +279,18 @@
         <dl class="kv" id="fs-stream"></dl>
       </section>
       <section class="sheet-section">
-        <div class="section-head"><p class="telemetry muted">YouTube audience</p><span class="tag" id="fs-aud-tag">N·A</span></div>
+        <div class="section-head"><p class="telemetry muted">YouTube analytics</p><span class="tag" id="fs-aud-tag">N·A</span></div>
+        <form class="key-form" id="fs-key-form" hidden>
+          <label class="field field-stack">
+            <span>YouTube Data API key</span>
+            <input class="input" type="password" id="fs-key" autocomplete="off" spellcheck="false" placeholder="Paste your key, e.g. AIzaSy…">
+          </label>
+          <button class="btn btn-sm" type="submit">Save key</button>
+        </form>
+        <figure class="spark" id="fs-viewers-fig">
+          <figcaption class="telemetry muted">Watching · <span id="fs-viewers-span"></span> <span id="fs-viewers-range"></span></figcaption>
+          <svg id="fs-spark-viewers" preserveAspectRatio="none" aria-label="Viewers over time"></svg>
+        </figure>
         <dl class="kv" id="fs-audience"></dl>
         <p class="hint" id="fs-aud-hint"></p>
       </section>
@@ -252,19 +316,60 @@
   <template id="tile-template">
     <div class="tile">
       <div class="screen">
-        <div class="frame"></div>
-        <div class="shield" title="Click to hear this feed (mutes the others)"></div>
-        <span class="tile-actions">
-          <button class="btn btn-xs btn-overlay" data-act="priority" aria-pressed="false" title="Priority feeds load first and stream at higher quality">Priority</button>
-          <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge">Jump live</button>
-          <button class="btn btn-xs btn-overlay" data-act="reload" title="Hard-refresh this player">Refresh</button>
-          <button class="btn btn-xs btn-overlay btn-icon" data-act="full" title="Fullscreen" aria-label="Fullscreen">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
-          </button>
-          <button class="btn btn-xs btn-overlay btn-icon" data-act="remove" title="Remove from wall" aria-label="Remove">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
-          </button>
-        </span>
+        <div class="stage">
+          <div class="frame"></div>
+          <div class="shield" title="Click to hear this feed (mutes the others)"></div>
+          <span class="tile-actions">
+            <button class="btn btn-xs btn-overlay" data-act="priority" aria-pressed="false" title="Priority feeds load first and stream at higher quality">Priority</button>
+            <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge">Jump live</button>
+            <button class="btn btn-xs btn-overlay" data-act="reload" title="Hard-refresh this player">Refresh</button>
+            <button class="btn btn-xs btn-overlay btn-icon" data-act="full" title="Fullscreen" aria-label="Fullscreen">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
+            </button>
+            <button class="btn btn-xs btn-overlay btn-icon" data-act="remove" title="Remove from wall" aria-label="Remove">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
+            </button>
+          </span>
+        </div>
+        <!-- Side panel: fills the pillarbox space when the tile is wider than its 16:9 video -->
+        <!-- SKWAD Metric blocks: mono label, mono value, provenance. When the card is too short,
+             blocks are hidden whole, lowest data-drop first. -->
+        <aside class="side" aria-label="Feed status">
+          <!-- Status tab: the state in the display voice, then live health -->
+          <div class="side-status">
+            <div class="side-status-row"><span class="status-dot"></span><span class="side-state"></span><span class="side-for"></span></div>
+            <dl class="m-grid m-vitals">
+              <div class="m" data-vital="latency" title="Time between a frame reaching YouTube and appearing here (includes this PC's clock offset)"><dt>Lag</dt><dd class="m-md" data-play="latency"></dd></div>
+              <div class="m" title="Buffer health: seconds of video downloaded ahead of the playhead. Red below 4 s"><dt>Buffer</dt><dd class="m-md" data-play="buffer"></dd></div>
+              <div class="m" data-vital="drift" title="Seconds behind this feed's usual lag"><dt>Drift</dt><dd class="m-md" data-play="drift"></dd></div>
+            </dl>
+          </div>
+          <p class="side-detail" data-drop="2"></p>
+          <section class="side-sec">
+            <div class="side-head"><span class="side-title">Playback</span><span class="prov">Measured</span></div>
+            <dl class="m-grid">
+              <div class="m m-wide" title="Stalls while playing · total time stalled. Red during a stall and for a minute after"><dt>Stalls</dt><dd data-play="stalls"></dd></div>
+              <div class="m" title="Resolution the player reports it is streaming" data-drop="10"><dt>Quality</dt><dd data-play="quality"></dd></div>
+              <div class="m" title="Jumps to the live edge" data-drop="7"><dt>Jumps</dt><dd data-play="jumps"></dd></div>
+              <div class="m" title="Player refreshes" data-drop="6"><dt>Refreshes</dt><dd data-play="reloads"></dd></div>
+              <div class="m" title="Next scheduled refresh" data-drop="3"><dt>Refresh in</dt><dd data-play="refresh"></dd></div>
+            </dl>
+          </section>
+          <section class="side-sec side-yt" data-drop="11">
+            <div class="side-head"><span class="side-title">YouTube</span><span class="prov side-yt-tag">N·A</span></div>
+            <dl class="m-grid">
+              <div class="m m-hero"><dt>Watching now</dt><dd class="m-lg"><span data-yt="viewers">—</span><span class="m-delta" data-yt="trend"></span></dd><span class="prov" data-yt="viewersProv"></span></div>
+              <div class="m" data-drop="7.5" title="Most viewers since the backend started tracking this feed"><dt>Peak</dt><dd data-yt="peak">—</dd></div>
+              <div class="m" data-drop="9.5"><dt>Likes</dt><dd data-yt="likes">—</dd></div>
+              <div class="m" data-drop="9"><dt>Views</dt><dd data-yt="views">—</dd></div>
+              <div class="m" data-drop="8.5"><dt data-yt="uptimeLabel">Live for</dt><dd data-yt="uptime">—</dd></div>
+              <div class="m" data-drop="5" title="Comments on the video; live chat is separate"><dt>Comments</dt><dd data-yt="comments">—</dd></div>
+              <div class="m" data-drop="4" title="Channel subscribers"><dt>Subs</dt><dd data-yt="subscribers">—</dd></div>
+              <div class="m m-full" data-drop="8" title="Who can watch it, whether it may play in other sites (this wall), and HD or SD"><dt>Access</dt><dd data-yt="access">—</dd></div>
+            </dl>
+            <button class="side-note" type="button" data-drop="1"></button>
+          </section>
+        </aside>
       </div>
       <div class="info">
         <div class="info-head">

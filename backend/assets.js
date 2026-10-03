@@ -1,5 +1,5 @@
 // The wall's own files (public/, the telemetry agent). Run with node they come from the
-// project folder; packaged as IXG Multiviewer.exe they are embedded in the executable.
+// project folder; packaged as IXG Wall.exe they are embedded in the executable.
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./paths');

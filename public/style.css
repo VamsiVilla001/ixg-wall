@@ -1,4 +1,4 @@
-/* IXG Multiviewer — SKWAD design system, Live mode.
+/* IXG Wall — SKWAD design system, Live mode.
    The wall is a live-competition surface, so it renders in SKWAD's dark Live palette only:
    in this system dark is the mode of live competition, not a theme preference. */
 
@@ -26,6 +26,7 @@
   --warn: #b98216;
   --warn-on-dark: #d9a23a;
   --danger: #c4453a;
+  --danger-on-dark: #ff8f84; /* red text and dots on the dark Live surfaces */
 
   --font-sans: "Manrope", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -39,6 +40,11 @@
 
   --ease-swift: cubic-bezier(.2, 0, 0, 1);
   --pulse-duration: 2.4s;
+  /* Info bar under each video: name row + stats row, or the name row alone. The wall's
+     layout maths reads these, so the bar is always exactly one of the two heights. */
+  --bar-full: 51px;
+  --bar-slim: 33px;
+  --topbar-h: 48px; /* side sheets open below it, so their headers and Close stay visible */
   --halftone: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 20 20%27%3E%3Cpolygon points=%278.20,5.06 6.62,5.81 6.62,6.62 5.81,6.62 5.06,8.20 4.94,8.20 4.19,6.62 3.38,6.62 3.38,5.81 1.80,5.06 1.80,4.94 3.38,4.19 3.38,3.38 4.19,3.38 4.94,1.80 5.06,1.80 5.81,3.38 6.62,3.38 6.62,4.19 8.20,4.94%27/%3E%3Cpolygon points=%2718.20,15.06 16.62,15.81 16.62,16.62 15.81,16.62 15.06,18.20 14.94,18.20 14.19,16.62 13.38,16.62 13.38,15.81 11.80,15.06 11.80,14.94 13.38,14.19 13.38,13.38 14.19,13.38 14.94,11.80 15.06,11.80 15.81,13.38 16.62,13.38 16.62,14.19 18.20,14.94%27/%3E%3C/svg%3E");
   color-scheme: dark;
 }
@@ -199,7 +205,7 @@ code { font-family: var(--font-mono); }
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 48px;
+  height: var(--topbar-h);
   padding: 0 12px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
@@ -256,7 +262,7 @@ code { font-family: var(--font-mono); }
 }
 .metric-value small { font-size: 11px; color: var(--muted-foreground); font-weight: 500; }
 .metric-value[data-tone="warn"] { color: var(--warn-on-dark); }
-.metric-value[data-tone="bad"] { color: var(--danger); }
+.metric-value[data-tone="bad"] { color: var(--danger-on-dark); }
 .global-actions { flex: none; display: flex; gap: 6px; }
 .btn-square { width: 28px; padding: 0; }
 
@@ -323,6 +329,47 @@ code { font-family: var(--font-mono); }
   background: #000;
 }
 
+/* Scroll layout: fixed columns, every tile one legible size (height set from the layout
+   maths), and the wall scrolls for the feeds below. */
+.grid.scroll {
+  grid-template-rows: none;
+  grid-auto-rows: var(--tile-h);
+  align-content: start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--input) transparent;
+  scrollbar-gutter: stable;
+}
+.grid.scroll .label { font-size: 15px; }
+.grid.scroll .info-head .tag { font-size: 10px; }
+
+/* Settings → Layout preview: the wall in miniature, to scale */
+.layout-preview {
+  position: relative;
+  width: 100%;
+  margin: 6px 0 4px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.layout-preview.scrolls::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--fold);
+  border-top: 1px dashed var(--muted-foreground);
+}
+.lp-tile { position: absolute; display: flex; align-items: flex-start; background: var(--card); box-shadow: inset 0 0 0 1px var(--border); }
+.lp-tile.below { opacity: .35; }
+.lp-video { flex: none; background: #3a362f; }
+.lp-card { flex: none; border-left: 1px solid var(--border); background: color-mix(in oklab, var(--ok) 22%, var(--card)); }
+.layout-summary { color: var(--foreground); }
+.range { width: 120px; accent-color: var(--foreground); }
+#card-pct-out { min-width: 4ch; text-align: right; }
+
 /* Empty — the calm state, halftone ground on one edge */
 .empty {
   position: absolute;
@@ -364,7 +411,24 @@ code { font-family: var(--font-mono); }
   /* A telemetry update in one tile never re-lays-out or repaints its 29 neighbours. */
   contain: layout paint style;
 }
-.screen { position: relative; flex: 1; min-height: 0; background: #000; }
+.screen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: #000;
+  container: screen / size;
+}
+/* The video sits in an exact 16:9 box (or the full screen when the tile is taller than 16:9).
+   Centred normally; pushed left when the side panel takes the spare width. */
+.stage {
+  position: relative;
+  flex: none;
+  width: min(100cqw, 100cqh * 16 / 9);
+  height: 100%;
+  margin: 0 auto;
+}
+.tile.side-on .stage { margin: 0; }
 .frame, .shield {
   position: absolute;
   inset: 0;
@@ -390,6 +454,8 @@ code { font-family: var(--font-mono); }
 }
 /* The feed you are hearing carries the ember frame, like PGM in Prism */
 .tile.solo::after { box-shadow: inset 0 0 0 2px var(--ember-bright); }
+/* Buffering or failed: a red frame, readable from across the room. Outranks the audio frame. */
+.tile.alarm::after { box-shadow: inset 0 0 0 2px var(--danger); }
 
 .tile-actions {
   position: absolute;
@@ -411,14 +477,170 @@ code { font-family: var(--font-mono); }
 /* Selected states fill ink, not ember */
 .btn-overlay[aria-pressed="true"] { background: var(--foreground); color: var(--background); box-shadow: none; }
 
+/* Side card: fills the spare width beside the video. Built from SKWAD Metric blocks: mono
+   label, mono value (weight 500, at the system's lg / md / sm sizes), provenance. The state word
+   is the card's hero moment, in the display voice. Sizes scale with the card; a card too short
+   for every block hides whole blocks, lowest data-drop first. */
+.side {
+  --u: min(1cqi, .6cqh);
+  display: none;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+  container: side / size;
+}
+.tile.side-on .side { display: flex; }
+.tile.side-on .info-head .status { display: none; }
+
+/* Status tab: state and how long it has held, then live health */
+.side-status {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 9px 8px;
+  border-left: 3px solid var(--ink-4);
+  border-radius: var(--radius-sm);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+}
+.side-status-row { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+.side-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 800 clamp(14px, calc(var(--u) * 10), 26px)/1.1 var(--font-display);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.side-status .status-dot { flex: none; width: clamp(7px, calc(var(--u) * 3.5), 11px); height: clamp(7px, calc(var(--u) * 3.5), 11px); }
+.side-for {
+  margin-left: auto;
+  padding-left: 4px;
+  font: 600 clamp(10px, calc(var(--u) * 5), 13px)/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+@container side (max-width: 150px) { .side-for { display: none; } }
+.side-status[data-tone="ok"] { border-left-color: var(--ok-on-dark); background: color-mix(in oklab, var(--ok) 22%, var(--card)); color: var(--foreground); }
+.side-status[data-tone="ok"] .status-dot { background: var(--ok-on-dark); }
+.side-status[data-tone="warn"] { border-left-color: var(--warn-on-dark); background: color-mix(in oklab, var(--warn) 28%, var(--card)); color: var(--foreground); }
+.side-status[data-tone="warn"] .status-dot { background: var(--warn-on-dark); }
+/* Buffering and errors on a live broadcast are red flags, never amber */
+.side-status[data-tone="bad"] { border-left-color: var(--danger); background: color-mix(in oklab, var(--danger) 34%, var(--card)); color: #fff; }
+.side-status[data-tone="bad"] .status-dot { background: var(--danger-on-dark); }
+.side-detail {
+  flex: none;
+  height: 1.4em;
+  margin: -3px 0 0;
+  color: var(--muted-foreground);
+  font: 500 clamp(11px, calc(var(--u) * 5.5), 13px)/1.4 var(--font-sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sections: a Manrope title, provenance on the right */
+.side-sec { flex: none; display: flex; flex-direction: column; gap: 4px; padding-top: 6px; border-top: 1px solid var(--border); }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.side-title { color: var(--foreground); font: 700 clamp(11.5px, calc(var(--u) * 5.5), 13px)/1.3 var(--font-sans); }
+/* Provenance tag: the number's origin travels with it */
+.prov { color: var(--ink-4); font: 600 9px/1.5 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+.prov:empty { display: none; }
+
+/* Metric blocks: label over value */
+.m-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin: 0; }
+@container side (min-width: 200px) { .m-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.m-grid.m-vitals { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 8px; }
+.m { display: flex; flex-direction: column; min-width: 0; }
+.m-wide { grid-column: span 2; }
+.m-hero, .m-full { grid-column: 1 / -1; }
+.m dt {
+  color: var(--muted-foreground);
+  font: 600 10px/1.5 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.m dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--foreground);
+  font: 500 clamp(11px, min(calc(var(--u) * 6.5), 6.2cqi), 16px)/1.25 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.m dd.m-md { font-size: clamp(12px, min(calc(var(--u) * 9), 6.3cqi), 22px); } /* fits h:mm:ss inside the status tab */
+.m dd.m-lg { display: flex; align-items: baseline; gap: 8px; font-size: clamp(20px, calc(var(--u) * 14), 32px); line-height: 1.2; }
+.m dd.m-lg > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Reason in place of a number (Ended, Hidden): smaller and muted, never mistaken for a count */
+.m dd [data-kind="word"], .m dd[data-kind="word"] { color: var(--muted-foreground); font-size: clamp(12px, calc(var(--u) * 6.5), 16px); }
+/* Delta: the sign colours itself, up is ok and down is danger */
+.m-delta { flex: none; font: 600 11px/1 var(--font-mono); }
+.m-delta[data-tone="ok"] { color: var(--ok-on-dark); }
+.m-delta[data-tone="bad"] { color: var(--danger-on-dark); }
+.m dd[data-tone="ok"] { color: var(--ok-on-dark); }
+.m dd[data-tone="warn"] { color: var(--warn-on-dark); }
+.m dd[data-tone="bad"] { color: var(--danger-on-dark); }
+/* Inside the status tab the labels take the tab's ink; a thin buffer is a solid red chip */
+.side-status .m dt { color: inherit; opacity: .75; }
+.side-status .m dd { color: inherit; }
+.side-status .m dd[data-tone="warn"] { color: var(--warn-on-dark); }
+.side-status .m dd[data-tone="bad"] { align-self: flex-start; max-width: 100%; padding: 0 4px; border-radius: var(--radius-xs); background: var(--danger); color: #fff; }
+.m-hero .prov { margin-top: 1px; }
+/* A metric with nothing behind it yet (Peak before any viewer count) gives up its space */
+.m[data-empty] { display: none; }
+
+/* Always two lines tall, so the card's height never changes with the message */
+.side-note {
+  flex: none;
+  height: 2.8em;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font: 500 11.5px/1.4 var(--font-sans);
+  text-align: left;
+  overflow: hidden;
+}
+.side-note[data-link] { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.side-note[data-link]:hover { color: var(--foreground); }
+.side-note[data-tone="warn"] { color: var(--warn-on-dark); }
+.side-note[data-tone="bad"] { color: var(--danger-on-dark); }
+
+/* YouTube API key: its state, right under the input */
+.yt-status { margin: 6px 0 0; color: var(--muted-foreground); font: 500 11.5px/1.45 var(--font-mono); overflow-wrap: anywhere; }
+.yt-status:empty { display: none; }
+.yt-status[data-tone="ok"] { color: var(--ok-on-dark); }
+.yt-status[data-tone="warn"] { color: var(--warn-on-dark); }
+.yt-status[data-tone="bad"] { color: var(--danger-on-dark); }
+.hint a { color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
+.key-form { display: grid; justify-items: start; gap: 8px; margin: 8px 0 4px; }
+.key-form .field { width: 100%; }
+.key-label { font-size: 13px; }
+.key-row { display: flex; gap: 6px; width: 100%; }
+.key-row .input { flex: 1; min-width: 0; height: 28px; font-family: var(--font-mono); font-size: 12px; }
+.key-row .btn { flex: none; }
 .info {
   flex: none;
   display: grid;
+  align-content: center;
   gap: 3px;
-  padding: 6px 8px 6px;
+  height: var(--bar-full);
+  padding: 0 8px;
   background: var(--card);
   border-top: 1px solid var(--border);
 }
+.hide-stats .info, .tile.side-on .info { height: var(--bar-slim); }
+.tile.side-on .tile-stats { display: none; }
 .info-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Fixed width so every feed name starts at the same x across the wall */
 .status {
@@ -439,8 +661,8 @@ code { font-family: var(--font-mono); }
 .status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-4); }
 .status[data-tone="ok"] .status-dot { background: var(--ok-on-dark); }
 .status[data-tone="warn"] .status-dot { background: var(--warn-on-dark); }
-.status[data-tone="bad"] { color: #f2c4bf; }
-.status[data-tone="bad"] .status-dot { background: var(--danger); }
+.status[data-tone="bad"] { background: color-mix(in oklab, var(--danger) 34%, var(--card)); color: #fff; }
+.status[data-tone="bad"] .status-dot { background: var(--danger-on-dark); }
 .label {
   flex: 1;
   min-width: 0;
@@ -478,7 +700,7 @@ code { font-family: var(--font-mono); }
 .stats-list [data-stat="quality"] { min-width: 7ch; }
 .stats-list [data-stat="stalls"] { min-width: 16ch; }
 .tile-stats [data-tone="warn"] { color: var(--warn-on-dark); }
-.tile-stats [data-tone="bad"] { color: var(--danger); }
+.tile-stats [data-tone="bad"] { color: var(--danger-on-dark); font-weight: 700; }
 .tile-stats > .tag { flex: none; padding: 0 5px; font-size: 9px; }
 .hide-stats .tile-stats { display: none; }
 .section-title { margin: 8px 0 2px; }
@@ -528,7 +750,7 @@ code { font-family: var(--font-mono); }
 }
 .kv dd[data-tone="ok"] { color: var(--ok-on-dark); }
 .kv dd[data-tone="warn"] { color: var(--warn-on-dark); }
-.kv dd[data-tone="bad"] { color: var(--danger); }
+.kv dd[data-tone="bad"] { color: var(--danger-on-dark); }
 .kv dd .tag { margin-left: 6px; padding: 0 4px; font-size: 9px; }
 .sparks { display: grid; gap: 10px; margin: 12px 0 4px; }
 .spark { margin: 0; }
@@ -536,19 +758,25 @@ code { font-family: var(--font-mono); }
 .spark svg { display: block; width: 100%; height: 44px; background: var(--background); border-radius: var(--radius-md); }
 .spark .line { fill: none; stroke: var(--foreground); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .spark .area { fill: color-mix(in oklab, var(--foreground) 8%, transparent); }
-.spark .threshold { stroke: var(--warn-on-dark); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+/* The low-buffer line on the buffer chart: below it a live feed is about to stall */
+.spark .threshold { stroke: var(--danger-on-dark); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 .field-stack { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+/* .field (declared later) would centre a stacked field's label and shrink its input */
+.field.field-stack { align-items: stretch; justify-content: flex-start; }
 
 /* One-shot settle flashes when the wall acts on a feed — not loops */
 .tile.pulse-resync::after { animation: flash-resync 900ms var(--ease-swift); }
 .tile.pulse-reload::after { animation: flash-reload 900ms var(--ease-swift); }
+.tile.pulse-alarm::after { animation: flash-alarm 900ms var(--ease-swift); }
 @keyframes flash-resync { from { box-shadow: inset 0 0 0 2px var(--foreground); } }
 @keyframes flash-reload { from { box-shadow: inset 0 0 0 2px var(--warn-on-dark); } }
+/* Refreshed because it was stuck buffering: a red flash, then the alarm frame if it persists */
+@keyframes flash-alarm { from { box-shadow: inset 0 0 0 3px var(--danger-on-dark); } }
 
 /* Sheet — right-side context panel */
 .sheet {
   position: fixed;
-  top: 0;
+  top: var(--sheet-top, var(--topbar-h)); /* the top bar's measured height when it wraps */
   right: 0;
   bottom: 0;
   width: min(380px, 100vw);
@@ -570,7 +798,24 @@ code { font-family: var(--font-mono); }
 }
 .sheet-head h2 { margin-top: 4px; font: 800 15px/1.2 var(--font-sans); }
 .sheet-section { padding: 6px 16px 12px; border-bottom: 1px solid var(--border); }
-.sheet-log { flex: 1; min-height: 0; overflow-y: auto; border-bottom: 0; position: relative; z-index: 1; padding-top: 12px; }
+/* Settings scroll as one column under the fixed header; the event log is the last section
+   and fills any space left when the settings are short. Above the halftone edge. */
+.sheet-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.sheet-body, .feed-body {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--input) transparent;
+  scrollbar-gutter: stable;
+}
+.sheet-log { flex: 1 0 auto; border-bottom: 0; padding-top: 12px; }
 .sheet-ground { position: absolute; left: 0; right: 0; bottom: 0; height: 120px; }
 .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
 .field-unit { display: flex; align-items: center; gap: 6px; color: var(--muted-foreground); font: 500 12px var(--font-mono); }
@@ -587,7 +832,7 @@ code { font-family: var(--font-mono); }
 .log time { color: var(--muted-foreground); margin-right: 8px; }
 .log .who { color: var(--foreground); font-weight: 600; margin-right: 8px; }
 .log li[data-level="warn"] .what { color: var(--warn-on-dark); }
-.log li[data-level="bad"] .what { color: var(--danger); }
+.log li[data-level="bad"] .what { color: var(--danger-on-dark); }
 .log:empty::before {
   content: "No events yet. Jumps, refreshes and errors land here as they happen.";
   color: var(--muted-foreground);

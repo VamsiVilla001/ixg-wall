@@ -1,4 +1,4 @@
-// Builds dist/IXG Multiviewer.exe: a Node single executable application with the backend
+// Builds dist/IXG Wall.exe: a Node single executable application with the backend
 // bundled into one script and the wall's files (public/, the telemetry agent) embedded.
 //   npm run build
 const fs = require('fs');
@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const DIST = path.join(ROOT, 'dist');
 const WORK = path.join(DIST, '.build');
-const EXE = path.join(DIST, 'IXG Multiviewer.exe');
+const EXE = path.join(DIST, 'IXG Wall.exe');
 const SEA_FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
@@ -151,7 +151,7 @@ async function main() {
   fs.mkdirSync(WORK, { recursive: true });
 
   console.log('Bundling the backend');
-  const script = path.join(WORK, 'ixg-multiviewer.js');
+  const script = path.join(WORK, 'ixg-wall.js');
   fs.writeFileSync(script, bundle('server.js'));
 
   const assetKeys = [...listFiles('public'), 'telemetry/win-counters.ps1'];
@@ -174,11 +174,11 @@ async function main() {
     'file-version': version,
     'product-version': version,
     'version-string': {
-      ProductName: 'IXG Multiviewer',
-      FileDescription: 'IXG Multiviewer',
+      ProductName: 'IXG Wall',
+      FileDescription: 'IXG Wall',
       CompanyName: 'Tesseract Esports LLP',
-      InternalName: 'IXG Multiviewer',
-      OriginalFilename: 'IXG Multiviewer.exe',
+      InternalName: 'IXG Wall',
+      OriginalFilename: 'IXG Wall.exe',
       LegalCopyright: '',
     },
   });

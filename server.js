@@ -1,13 +1,14 @@
-// IXG Multiviewer backend. Serves the wall (YouTube embeds refuse to play from file://
+// IXG Wall backend. Serves the wall (YouTube embeds refuse to play from file://
 // pages), streams system telemetry to it, and runs the dedicated wall browser.
 //   node server.js          serve the wall on http://localhost:8080
 //   node server.js --open   ...and open it in the managed wall window
-// IXG Multiviewer.exe (npm run build) opens the wall window by default; --serve skips it.
+// IXG Wall.exe (npm run build) opens the wall window by default; --serve skips it.
 const http = require('http');
 const path = require('path');
 const { Telemetry } = require('./backend/telemetry');
 const { WallBrowser, DECODE_MODES } = require('./backend/wall-browser');
 const { WallStore } = require('./backend/wall-store');
+const { YouTubeStats } = require('./backend/youtube');
 const { PACKAGED, readAsset } = require('./backend/assets');
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -27,12 +28,15 @@ const TYPES = {
 const telemetry = new Telemetry({ intervalMs: 2000 });
 const wallBrowser = new WallBrowser({ url: `http://localhost:${PORT}/` });
 const wallStore = new WallStore();
+const youtube = new YouTubeStats({ wallStore, referer: `http://localhost:${PORT}/` });
 const sseClients = new Set();
 
 function broadcast(event, data) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of sseClients) res.write(msg);
 }
+
+youtube.on('update', () => broadcast('youtube', youtube.state()));
 
 telemetry.on('sample', (sample) => {
   const msg = `data: ${JSON.stringify({ ...sample, browser: wallBrowser.status() })}\n\n`;
@@ -66,6 +70,7 @@ async function handleApi(req, res, urlPath) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     res.write('retry: 3000\n\n');
     if (telemetry.latest) res.write(`data: ${JSON.stringify({ ...telemetry.latest, browser: wallBrowser.status() })}\n\n`);
+    res.write(`event: youtube\ndata: ${JSON.stringify(youtube.state())}\n\n`);
     sseClients.add(res);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     req.on('close', () => { clearInterval(ping); sseClients.delete(res); });
@@ -80,7 +85,15 @@ async function handleApi(req, res, urlPath) {
     const version = wallStore.save(body.wall);
     if (version == null) return sendJson(res, 400, { error: 'Invalid wall' });
     broadcast('wall', { version, clientId: String(body.clientId || '') });
+    youtube.wallChanged();
     return sendJson(res, 200, { version });
+  }
+  if (urlPath === '/api/youtube' && req.method === 'GET') {
+    return sendJson(res, 200, youtube.state());
+  }
+  if (urlPath === '/api/youtube/history' && req.method === 'GET') {
+    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
+    return sendJson(res, 200, { id, series: youtube.series(id) });
   }
   if (urlPath === '/api/status' && req.method === 'GET') {
     return sendJson(res, 200, { telemetry: telemetry.latest, browser: wallBrowser.status() });
@@ -137,7 +150,7 @@ const server = http.createServer((req, res) => {
 // Already running (a second double-click): hand over to that backend instead of failing.
 server.on('error', async (err) => {
   if (err.code !== 'EADDRINUSE') throw err;
-  console.log(`The IXG Multiviewer backend is already running on port ${PORT}.`);
+  console.log(`The IXG Wall backend is already running on port ${PORT}.`);
   if (OPEN) {
     try {
       const res = await fetch(`http://127.0.0.1:${PORT}/api/wall-browser`, {
@@ -158,7 +171,7 @@ server.on('error', async (err) => {
 // Same for a crash: show the error instead of a window that blinks shut.
 if (PACKAGED) {
   process.on('uncaughtException', (err) => {
-    console.error(`\nIXG Multiviewer stopped: ${err.stack || err}`);
+    console.error(`\nIXG Wall stopped: ${err.stack || err}`);
     console.error('Press Enter to close.');
     process.stdin.resume();
     process.stdin.once('data', () => process.exit(1));
@@ -166,9 +179,10 @@ if (PACKAGED) {
 }
 
 server.listen(PORT, HOST, () => {
-  console.log(`IXG Multiviewer running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+  console.log(`IXG Wall running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   if (PACKAGED) console.log('Keep this window open while the wall runs. Closing it stops the backend.');
   telemetry.start();
+  youtube.start();
   if (OPEN) {
     // Give an adopted wall window a moment to be recognised before launching a new one.
     setTimeout(() => wallBrowser.launch()
@@ -177,9 +191,11 @@ server.listen(PORT, HOST, () => {
   }
 });
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
+// SIGHUP: the backend's console window was closed (Windows allows a few seconds to finish).
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     telemetry.stop();
+    youtube.stop(); // writes the audience history so a restart keeps it
     process.exit(0);
   });
 }
