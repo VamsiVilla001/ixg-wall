@@ -1,0 +1,4 @@
+* text=auto
+# cmd.exe needs Windows line endings to run batch files reliably
+*.cmd text eol=crlf
+*.woff2 binary

@@ -1,0 +1,628 @@
+/* IXG Multiviewer — SKWAD design system, Live mode.
+   The wall is a live-competition surface, so it renders in SKWAD's dark Live palette only:
+   in this system dark is the mode of live competition, not a theme preference. */
+
+@font-face { font-family: "Anybody"; font-weight: 700 800; font-display: swap; src: url(fonts/Anybody-800.woff2) format("woff2"); }
+@font-face { font-family: "Manrope"; font-weight: 500 800; font-display: swap; src: url(fonts/Manrope-500.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 500 600; font-display: swap; src: url(fonts/JetBrainsMono-500.woff2) format("woff2"); }
+
+:root {
+  /* SKWAD Live tokens (.dark) */
+  --background: #131210;
+  --foreground: #f2f0eb;
+  --card: #1b1916;
+  --secondary: #24211c;
+  --muted-foreground: #95908a;
+  --ink-4: #615d55;
+  --accent: #2e211a;
+  --accent-foreground: #f58138;
+  --border: #34312a;
+  --input: #3e3a32;
+  --ring: #f58138;
+  --ember: #d95f18;
+  --ember-bright: #f58138;
+  --ok: #2e7d5b;
+  --ok-on-dark: #4fa37f;
+  --warn: #b98216;
+  --warn-on-dark: #d9a23a;
+  --danger: #c4453a;
+
+  --font-sans: "Manrope", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --font-display: "Anybody", system-ui, sans-serif;
+
+  --radius-xs: 1px;  /* tags */
+  --radius-sm: 2px;  /* buttons, inputs */
+  --radius-md: 3px;  /* panels, alerts */
+  --radius-lg: 4px;  /* cards */
+  --radius-xl: 6px;  /* dialogs */
+
+  --ease-swift: cubic-bezier(.2, 0, 0, 1);
+  --pulse-duration: 2.4s;
+  --halftone: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 20 20%27%3E%3Cpolygon points=%278.20,5.06 6.62,5.81 6.62,6.62 5.81,6.62 5.06,8.20 4.94,8.20 4.19,6.62 3.38,6.62 3.38,5.81 1.80,5.06 1.80,4.94 3.38,4.19 3.38,3.38 4.19,3.38 4.94,1.80 5.06,1.80 5.81,3.38 6.62,3.38 6.62,4.19 8.20,4.94%27/%3E%3Cpolygon points=%2718.20,15.06 16.62,15.81 16.62,16.62 15.81,16.62 15.06,18.20 14.94,18.20 14.19,16.62 13.38,16.62 13.38,15.81 11.80,15.06 11.80,14.94 13.38,14.19 13.38,13.38 14.19,13.38 14.94,11.80 15.06,11.80 15.81,13.38 16.62,13.38 16.62,14.19 18.20,14.94%27/%3E%3C/svg%3E");
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font: 500 13.5px/1.45 var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--foreground); color: var(--background); }
+h1, h2, h3, p { margin: 0; }
+code { font-family: var(--font-mono); }
+
+/* Voices — display for names, Manrope for UI, mono for telemetry. Never mixed. */
+.telemetry {
+  font: 600 10px/1.4 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.muted { color: var(--muted-foreground); }
+
+/* Tag — 1px-radius mono micro-label for provenance and identifiers */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  font: 600 10px/1.4 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tag-accent { background: var(--accent); color: var(--accent-foreground); }
+
+/* Live badge — the only looping animation in the system */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--ember-bright);
+  color: var(--background);
+  font: 800 10px/1.3 var(--font-display);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse-live var(--pulse-duration) ease-in-out infinite;
+}
+@keyframes pulse-live { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* Buttons — 24 / 28 / 34 / 40 grid. Ink is routine, ember is the one decisive action. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--foreground);
+  color: var(--background);
+  font: 700 12.5px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms var(--ease-swift), border-color 120ms var(--ease-swift), color 120ms var(--ease-swift);
+}
+.btn:hover { background: #dcd9d2; }
+.btn:active { background: #c9c5bd; } /* press darkens; the geometry holds */
+.btn-accent { background: var(--ember-bright); color: var(--background); }
+.btn-accent:hover { background: #f79352; }
+.btn-accent:active { background: var(--ember); }
+.btn-outline { background: transparent; color: var(--foreground); box-shadow: inset 0 0 0 1px var(--input); }
+.btn-outline:hover { background: var(--secondary); }
+.btn-outline:active { background: var(--border); }
+.btn-ghost { background: transparent; color: var(--foreground); }
+.btn-ghost:hover { background: var(--secondary); }
+.btn-ghost:active { background: var(--border); }
+.btn-destructive { background: var(--danger); color: #fff; }
+.btn-destructive:hover { background: #d0554a; }
+.btn-destructive:active { background: #a8382e; }
+.btn-sm { height: 28px; padding: 0 12px; font-size: 12px; gap: 6px; }
+.btn-xs { height: 24px; padding: 0 8px; font-size: 11px; gap: 4px; }
+.btn-icon { width: 24px; padding: 0; }
+.btn svg { width: 14px; height: 14px; display: block; }
+
+:is(.btn, .input, .switch):focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--ring) 70%, transparent);
+  outline-offset: 1px;
+}
+
+/* Inputs */
+.input {
+  height: 34px;
+  min-width: 0;
+  padding: 4px 12px;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--input) 30%, transparent);
+  color: var(--foreground);
+  font: 500 13.5px/1 var(--font-sans);
+  transition: border-color 120ms var(--ease-swift);
+}
+.input::placeholder { color: var(--ink-4); }
+.input:focus-visible { border-color: var(--ring); }
+.input[aria-invalid="true"] { border-color: var(--danger); }
+.input-num { width: 76px; text-align: right; font-family: var(--font-mono); font-size: 12.5px; }
+.select { border-radius: var(--radius-md); padding-right: 8px; cursor: pointer; }
+.select option { background: var(--card); }
+
+/* Switch — immediate effect; checked fills ink, not ember */
+.switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 32px;
+  height: 18px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--input);
+  cursor: pointer;
+  transition: background-color 180ms var(--ease-swift);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--foreground);
+  transition: transform 180ms var(--ease-swift), background-color 180ms var(--ease-swift);
+}
+.switch:checked { background: var(--foreground); }
+.switch:checked::after { transform: translateX(14px); background: var(--background); }
+
+/* Top bar — one 48px row: brand, live state, telemetry strip, actions. Adding feeds lives
+   in a popover so the bar never wraps and the wall keeps its height. */
+.topbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+  padding: 0 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  z-index: 12;
+}
+.brand { flex: none; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.brand-name {
+  font: 800 18px/1 var(--font-display);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.brand-mark {
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  margin-left: -4px;
+  background: var(--ember-bright);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+.topbar > .live-badge { flex: none; }
+
+.metrics {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow: hidden;
+}
+.metric {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 14px;
+  border-left: 1px solid var(--border);
+}
+.metric:first-child { border-left: 0; padding-left: 0; }
+.metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 9.5px/1.2 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.metric-label .tag { padding: 0 3px; font-size: 8.5px; line-height: 1.35; }
+.metric-value {
+  font: 600 14px/1.1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.metric-value small { font-size: 11px; color: var(--muted-foreground); font-weight: 500; }
+.metric-value[data-tone="warn"] { color: var(--warn-on-dark); }
+.metric-value[data-tone="bad"] { color: var(--danger); }
+.global-actions { flex: none; display: flex; gap: 6px; }
+.btn-square { width: 28px; padding: 0; }
+
+/* Add-stream popover, anchored under the actions */
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 12px;
+  width: min(440px, calc(100vw - 24px));
+  padding: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+  animation: dialog-in 180ms var(--ease-swift);
+}
+.popover form { display: grid; gap: 12px; }
+.popover .field-stack > span { font-size: 12.5px; }
+.textarea {
+  height: auto;
+  min-height: 92px;
+  padding: 8px 10px;
+  resize: vertical;
+  font: 500 12.5px/1.5 var(--font-mono);
+}
+.form-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--danger);
+  background: color-mix(in oklab, var(--danger) 14%, var(--background));
+  font-size: 12.5px;
+  white-space: pre-line;
+}
+.popover-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.perf-actions { display: flex; gap: 8px; margin: 4px 0 6px; }
+
+/* Narrow screens drop the least critical readings first, never the action buttons. */
+@media (max-width: 1500px) { .brand-sub { display: none; } }
+@media (max-width: 1360px) { .metric-optional { display: none; } }
+@media (max-width: 1100px) {
+  .metric-label .tag { display: none; }
+  #r-load-wrap { display: none; }
+}
+
+/* Alerts */
+.notice {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid;
+  font-size: 12.5px;
+}
+.notice-danger { border-left-color: var(--danger); background: color-mix(in oklab, var(--danger) 14%, var(--background)); }
+.notice-warn { border-left-color: var(--warn); background: color-mix(in oklab, var(--warn) 12%, var(--background)); }
+
+/* Wall */
+.wall { position: relative; flex: 1; min-height: 0; }
+.grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--rows, 1), minmax(0, 1fr));
+  gap: 2px;
+  background: #000;
+}
+
+/* Empty — the calm state, halftone ground on one edge */
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: hidden;
+  background: var(--background);
+}
+.empty-body { position: relative; z-index: 1; max-width: 460px; display: grid; gap: 10px; text-align: center; }
+.empty h1 { font: 700 18px/1.3 var(--font-sans); }
+.empty-body > p:not(.telemetry) { color: var(--muted-foreground); }
+.empty-ground { position: absolute; left: 0; right: 0; bottom: 0; height: 45%; }
+
+.halftone-fade-b {
+  background-color: var(--halftone-dot, var(--border));
+  -webkit-mask-image: var(--halftone), linear-gradient(#0000 32%, #0000008c 68%, #000 100%);
+  mask-image: var(--halftone), linear-gradient(#0000 32%, #0000008c 68%, #000 100%);
+  -webkit-mask-size: 9px 9px, 100% 100%;
+  mask-size: 9px 9px, 100% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  pointer-events: none;
+}
+
+/* Feed tiles — the video stays clean; identity and telemetry live in a solid bar beneath it */
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--card);
+  overflow: hidden;
+  /* A telemetry update in one tile never re-lays-out or repaints its 29 neighbours. */
+  contain: layout paint style;
+}
+.screen { position: relative; flex: 1; min-height: 0; background: #000; }
+.frame, .shield {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.frame iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  transform-origin: 0 0;
+}
+.shield { cursor: pointer; }
+.tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
+  transition: box-shadow 180ms var(--ease-swift);
+}
+/* The feed you are hearing carries the ember frame, like PGM in Prism */
+.tile.solo::after { box-shadow: inset 0 0 0 2px var(--ember-bright); }
+
+.tile-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 180ms var(--ease-swift);
+}
+.tile:hover .tile-actions, .tile:focus-within .tile-actions { opacity: 1; }
+.btn-overlay {
+  background: rgba(19, 18, 16, .9);
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.btn-overlay:hover { background: var(--secondary); }
+.btn-overlay:active { background: var(--border); }
+/* Selected states fill ink, not ember */
+.btn-overlay[aria-pressed="true"] { background: var(--foreground); color: var(--background); box-shadow: none; }
+
+.info {
+  flex: none;
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px 6px;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+}
+.info-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Fixed width so every feed name starts at the same x across the wall */
+.status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 98px;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--secondary);
+  font: 600 10px/1.4 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.status-text { overflow: hidden; text-overflow: ellipsis; }
+.status-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-4); }
+.status[data-tone="ok"] .status-dot { background: var(--ok-on-dark); }
+.status[data-tone="warn"] .status-dot { background: var(--warn-on-dark); }
+.status[data-tone="bad"] { color: #f2c4bf; }
+.status[data-tone="bad"] .status-dot { background: var(--danger); }
+.label {
+  flex: 1;
+  min-width: 0;
+  font: 700 13px/1.3 var(--font-sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.info-head .tag { flex: none; padding: 0 5px; font-size: 9px; }
+.prio-tag, .audio-tag { display: none !important; }
+.tile.priority .prio-tag, .tile.solo .audio-tag { display: inline-flex !important; }
+.tile.priority.held .prio-tag { color: var(--warn-on-dark); }
+
+/* One line of telemetry: items that do not fit wrap onto a hidden second line, so a
+   narrow tile shows fewer whole readings rather than clipped ones. The tag always stays. */
+.tile-stats { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.stats-list {
+  flex: 1;
+  min-width: 0;
+  height: 15px;
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  overflow: hidden;
+  font: 500 11px/15px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: #d8d4cc;
+}
+.stats-list > span { white-space: nowrap; }
+/* Fixed columns for the core readings so they line up tile to tile */
+.stats-list [data-stat="latency"] { min-width: 10ch; }
+.stats-list [data-stat="buffer"] { min-width: 10ch; }
+.stats-list [data-stat="drift"] { min-width: 12ch; }
+.stats-list [data-stat="quality"] { min-width: 7ch; }
+.stats-list [data-stat="stalls"] { min-width: 16ch; }
+.tile-stats [data-tone="warn"] { color: var(--warn-on-dark); }
+.tile-stats [data-tone="bad"] { color: var(--danger); }
+.tile-stats > .tag { flex: none; padding: 0 5px; font-size: 9px; }
+.hide-stats .tile-stats { display: none; }
+.section-title { margin: 8px 0 2px; }
+.stats-btn { flex: none; height: 20px; padding: 0 6px; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px var(--border); }
+.stats-btn:hover { color: var(--foreground); }
+.tile.inspected .stats-btn { background: var(--foreground); color: var(--background); box-shadow: none; }
+
+/* Inspecting with YouTube's own stats: the player is lifted beside the feed sheet and scaled
+   up from its normal render size, so it keeps streaming at the same quality. */
+.tile.focused .screen {
+  position: fixed;
+  top: var(--wall-top, 56px);
+  left: 0;
+  right: min(420px, 100vw);
+  bottom: 0;
+  z-index: 9;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.tile.focused .info { margin-top: auto; }
+.tile.focused { contain: none; } /* containment would trap the fixed-position player */
+
+.feed-sheet { width: min(420px, 100vw); z-index: 11; }
+.feed-title { min-width: 0; }
+.feed-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-sub { margin-top: 2px; color: var(--muted-foreground); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-actions { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.feed-actions a.btn { text-decoration: none; }
+#fs-nerds[aria-pressed="true"] { background: var(--foreground); color: var(--background); box-shadow: none; }
+.feed-body { flex: 1; min-height: 0; overflow-y: auto; }
+.section-head { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 6px; }
+.section-head .tag { padding: 0 5px; font-size: 9px; }
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 12px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.kv dt, .kv dd { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.kv dt { color: var(--muted-foreground); }
+.kv dd {
+  margin: 0;
+  text-align: right;
+  font: 500 12px/1.45 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.kv dd[data-tone="ok"] { color: var(--ok-on-dark); }
+.kv dd[data-tone="warn"] { color: var(--warn-on-dark); }
+.kv dd[data-tone="bad"] { color: var(--danger); }
+.kv dd .tag { margin-left: 6px; padding: 0 4px; font-size: 9px; }
+.sparks { display: grid; gap: 10px; margin: 12px 0 4px; }
+.spark { margin: 0; }
+.spark figcaption { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.spark svg { display: block; width: 100%; height: 44px; background: var(--background); border-radius: var(--radius-md); }
+.spark .line { fill: none; stroke: var(--foreground); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark .area { fill: color-mix(in oklab, var(--foreground) 8%, transparent); }
+.spark .threshold { stroke: var(--warn-on-dark); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.field-stack { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+
+/* One-shot settle flashes when the wall acts on a feed — not loops */
+.tile.pulse-resync::after { animation: flash-resync 900ms var(--ease-swift); }
+.tile.pulse-reload::after { animation: flash-reload 900ms var(--ease-swift); }
+@keyframes flash-resync { from { box-shadow: inset 0 0 0 2px var(--foreground); } }
+@keyframes flash-reload { from { box-shadow: inset 0 0 0 2px var(--warn-on-dark); } }
+
+/* Sheet — right-side context panel */
+.sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(380px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  z-index: 10;
+  animation: sheet-in 260ms var(--ease-swift);
+}
+@keyframes sheet-in { from { transform: translateX(24px); opacity: 0; } }
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sheet-head h2 { margin-top: 4px; font: 800 15px/1.2 var(--font-sans); }
+.sheet-section { padding: 6px 16px 12px; border-bottom: 1px solid var(--border); }
+.sheet-log { flex: 1; min-height: 0; overflow-y: auto; border-bottom: 0; position: relative; z-index: 1; padding-top: 12px; }
+.sheet-ground { position: absolute; left: 0; right: 0; bottom: 0; height: 120px; }
+.field { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
+.field-unit { display: flex; align-items: center; gap: 6px; color: var(--muted-foreground); font: 500 12px var(--font-mono); }
+.switch-row { display: flex; align-items: center; gap: 10px; margin: 12px 0; cursor: pointer; }
+.hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; margin: 2px 0 10px; }
+.log-head { display: flex; align-items: center; justify-content: space-between; }
+.log {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font: 500 11px/1.45 var(--font-mono);
+}
+.log li { padding: 6px 0; border-bottom: 1px solid var(--border); color: #d8d4cc; }
+.log time { color: var(--muted-foreground); margin-right: 8px; }
+.log .who { color: var(--foreground); font-weight: 600; margin-right: 8px; }
+.log li[data-level="warn"] .what { color: var(--warn-on-dark); }
+.log li[data-level="bad"] .what { color: var(--danger); }
+.log:empty::before {
+  content: "No events yet. Jumps, refreshes and errors land here as they happen.";
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+/* Dialog — confirmations; destructive asks before it acts */
+.dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  color: var(--foreground);
+}
+.dialog[open] { animation: dialog-in 180ms var(--ease-swift); }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(6px); } }
+.dialog::backdrop { background: rgba(10, 9, 8, .72); }
+.dialog-form { display: grid; gap: 12px; padding: 20px; }
+.dialog h2 { font: 800 15px/1.3 var(--font-sans); }
+.dialog-body { color: var(--muted-foreground); font-size: 13px; }
+.dialog-body:empty { display: none; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+@media (max-width: 720px) {
+  .topbar { height: auto; flex-wrap: wrap; padding: 8px 12px; gap: 8px 12px; }
+  .metrics { order: 3; flex-basis: 100%; overflow-x: auto; }
+  .global-actions { margin-left: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

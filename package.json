@@ -1,0 +1,15 @@
+{
+  "name": "ixg-multiviewer",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Low-latency YouTube multiviewer with live-edge drift correction, scheduled player refresh and a managed wall browser",
+  "scripts": {
+    "start": "node server.js",
+    "wall": "node server.js --open",
+    "build": "node build/build-exe.js"
+  },
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6",
+    "rcedit": "^4.0.1"
+  }
+}

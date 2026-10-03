@@ -1,0 +1,11 @@
+# Installed by npm install
+node_modules/
+
+# Built by npm run build
+dist/
+
+# Editor and Claude Code session settings
+.claude/
+.vscode/
+
+*.log

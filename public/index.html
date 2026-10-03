@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IXG Multiviewer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='1' fill='%23131210'/%3E%3Cpath d='M3 4h4v3H3zM9 4h4v3H9zM3 9h4v3H3z' fill='%23f2f0eb'/%3E%3Cpath d='M9 9h4v3H9z' fill='%23f58138'/%3E%3C/svg%3E">
+  <link rel="preload" href="fonts/Manrope-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/JetBrainsMono-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">IXG</span><span class="brand-mark" aria-hidden="true"></span>
+      <span class="telemetry muted brand-sub">Multiviewer</span>
+    </div>
+    <span id="live-badge" class="live-badge" hidden><span class="live-dot"></span>Live</span>
+
+    <div class="metrics" aria-live="polite">
+      <div class="metric">
+        <span class="metric-label">Feeds</span>
+        <span class="metric-value" id="r-playing">0/0</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Lag <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-latency">—</span>
+      </div>
+      <div class="metric" title="Download right now on this laptop's busiest network adapter, measured by the backend">
+        <span class="metric-label">Bandwidth now <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-bw-now">—</span>
+      </div>
+      <div class="metric" id="r-load-wrap">
+        <span class="metric-label">Bandwidth est. <span class="tag">Estimated</span></span>
+        <span class="metric-value" id="r-load">—</span>
+      </div>
+      <div class="metric metric-optional" title="Whole-laptop CPU, measured by the backend">
+        <span class="metric-label">CPU <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-cpu">—</span>
+      </div>
+      <div class="metric metric-optional" id="r-ccv-wrap" hidden>
+        <span class="metric-label">CCV <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-ccv">—</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Alerts</span>
+        <span class="metric-value" id="r-issues">0</span>
+      </div>
+    </div>
+
+    <div class="global-actions">
+      <button id="add-toggle" class="btn btn-accent btn-sm" aria-expanded="false" aria-controls="add-panel">Add stream</button>
+      <button id="resync-all" class="btn btn-outline btn-sm" title="Jump every live player to its live edge">Jump live</button>
+      <button id="reload-all" class="btn btn-outline btn-sm" title="Hard-refresh every player, staggered (releases buffers and memory)">Refresh all</button>
+      <button id="wall-full" class="btn btn-ghost btn-sm btn-square" title="Fullscreen the whole wall" aria-label="Fullscreen the whole wall">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
+      </button>
+      <button id="settings-toggle" class="btn btn-outline btn-sm" aria-expanded="false" aria-controls="drawer">Settings</button>
+    </div>
+
+    <div id="add-panel" class="popover" hidden>
+      <form id="add-form" autocomplete="off">
+        <label class="field-stack">
+          <span>YouTube live URLs or video IDs</span>
+          <textarea id="source" class="input textarea" rows="4" spellcheck="false" placeholder="e.g. youtube.com/live/jfKfPfyJRdk&#10;One per line to add several at once" required></textarea>
+        </label>
+        <label class="field-stack">
+          <span>Label <span class="muted">· single feed only, optional</span></span>
+          <input id="label" class="input" placeholder="e.g. Lobby 4 POV">
+        </label>
+        <p id="form-error" class="form-error" role="alert" hidden></p>
+        <div class="popover-actions">
+          <button type="button" id="add-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+          <button type="submit" id="add-submit" class="btn btn-sm">Add feed</button>
+        </div>
+      </form>
+    </div>
+  </header>
+  <div id="banner" class="notice notice-warn" role="status" hidden></div>
+
+  <main class="wall">
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty">
+      <div class="empty-body">
+        <p class="telemetry muted">0 feeds · wall idle</p>
+        <h1>No feeds on the wall</h1>
+        <p>Press Add stream and paste YouTube live URLs or 11-character video IDs, one per line. Feeds start muted and catch up to their live edge on their own.</p>
+        <p class="telemetry muted">Click a feed to hear it · double-click its label to rename</p>
+      </div>
+      <div class="halftone-fade-b empty-ground" aria-hidden="true"></div>
+    </div>
+  </main>
+
+  <aside id="drawer" class="sheet" hidden aria-label="Settings">
+    <div class="sheet-head">
+      <div>
+        <p class="telemetry muted">Settings · applies instantly</p>
+        <h2>Wall behaviour</h2>
+      </div>
+      <button id="drawer-close" class="btn btn-outline btn-sm">Close</button>
+    </div>
+    <section class="sheet-section">
+      <div class="section-head"><p class="telemetry muted">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
+      <dl class="kv" id="perf-kv"></dl>
+      <label class="field">
+        <span>Video decoding</span>
+        <select class="input select" id="decode-mode">
+          <option value="software">Software (CPU)</option>
+          <option value="hardware">Hardware (GPU)</option>
+        </select>
+      </label>
+      <p class="hint" id="decode-hint">Applies to the managed wall window and restarts it. On the benchmark laptop (Ryzen 5 4600H, Radeon graphics) software decoding dropped 0% of frames at 30 feeds; the GPU decoder dropped 4–7% at 24.</p>
+      <div class="perf-actions">
+        <button type="button" id="wall-launch" class="btn btn-outline btn-sm">Open managed wall window</button>
+      </div>
+    </section>
+    <section class="sheet-section">
+      <label class="field">
+        <span>Health check every</span>
+        <span class="field-unit"><input class="input input-num" type="number" data-setting="checkIntervalSec" min="1" max="30" step="1"> s</span>
+      </label>
+      <label class="switch-row">
+        <input class="switch" type="checkbox" role="switch" data-setting="autoResync">
+        <span>Auto-jump to live edge</span>
+      </label>
+      <label class="field">
+        <span>Jump when a feed falls behind by</span>
+        <span class="field-unit"><input class="input input-num" type="number" data-setting="driftThresholdSec" min="1" max="60" step="0.5"> s</span>
+      </label>
+      <p class="hint">Drift is measured against the lowest lag that feed reached since it loaded. Three jumps inside two minutes escalate to a full refresh. Anything over 90 s behind jumps regardless.</p>
+      <label class="field">
+        <span>Hard-refresh each feed every</span>
+        <span class="field-unit"><input class="input input-num" type="number" data-setting="hardReloadMin" min="0" max="1440" step="1"> min</span>
+      </label>
+      <p class="hint">Destroys and recreates the player, releasing its video buffer and memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
+      <label class="field">
+        <span>Layout</span>
+        <select class="input select" data-setting="layout">
+          <option value="auto">Auto</option>
+          <option value="1">1 column</option>
+          <option value="2">2 columns</option>
+          <option value="3">3 columns</option>
+          <option value="4">4 columns</option>
+          <option value="5">5 columns</option>
+          <option value="6">6 columns</option>
+        </select>
+      </label>
+      <label class="switch-row">
+        <input class="switch" type="checkbox" role="switch" data-setting="showStats">
+        <span>Show telemetry on feeds</span>
+      </label>
+    </section>
+    <section class="sheet-section">
+      <p class="telemetry muted section-title">Bandwidth &amp; loading</p>
+      <label class="field">
+        <span>Available bandwidth</span>
+        <span class="field-unit"><input class="input input-num" type="number" data-setting="bandwidthMbps" min="0" max="10000" step="5"> Mbps</span>
+      </label>
+      <p class="hint">Your link's download speed from a speed test. Priority feeds are only boosted while the wall's estimated load stays under 80% of it. 0 means unknown: boosts are granted and shed one at a time when several feeds stall together.</p>
+      <label class="field">
+        <span>Priority feeds stream up to</span>
+        <select class="input select" data-setting="priorityQuality">
+          <option value="hd720">720p</option>
+          <option value="hd1080">1080p</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Start feeds</span>
+        <span class="field-unit"><input class="input input-num" type="number" data-setting="loadConcurrency" min="1" max="6" step="1"> at a time</span>
+      </label>
+      <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
+    </section>
+    <section class="sheet-section">
+      <p class="telemetry muted section-title">YouTube audience stats</p>
+      <label class="field field-stack">
+        <span>YouTube Data API key</span>
+        <input class="input" type="password" data-setting="ytApiKey" autocomplete="off" spellcheck="false" placeholder="e.g. AIzaSy…">
+      </label>
+      <p class="hint">Optional. Adds live viewers, views, likes and start time to each feed's stats, refreshed every minute (about 1,500 of the daily 10,000 quota units). Create the key in Google Cloud with the YouTube Data API v3 enabled, and restrict it to the referrer http://localhost:8080. It is stored in this browser only.</p>
+    </section>
+    <section class="sheet-section sheet-log">
+      <div class="log-head">
+        <p class="telemetry muted">Event log</p>
+        <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
+      </div>
+      <ol id="log" class="log"></ol>
+    </section>
+    <div class="halftone-fade-b sheet-ground" aria-hidden="true"></div>
+  </aside>
+
+  <aside id="feed-sheet" class="sheet feed-sheet" hidden aria-label="Feed stats">
+    <div class="sheet-head">
+      <div class="feed-title">
+        <p class="telemetry muted" id="fs-eyebrow">Feed stats</p>
+        <h2 id="fs-label"></h2>
+        <p class="feed-sub" id="fs-sub"></p>
+      </div>
+      <button id="fs-close" class="btn btn-outline btn-sm">Close</button>
+    </div>
+    <div class="feed-actions">
+      <button id="fs-nerds" class="btn btn-outline btn-sm" aria-pressed="false" title="Enlarge this feed and open YouTube's own Stats for nerds: connection speed, dropped frames, codecs, latency mode">Show YouTube stats</button>
+      <a id="fs-open" class="btn btn-ghost btn-sm" target="_blank" rel="noopener">Open on YouTube</a>
+    </div>
+    <div class="feed-body">
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Feed health</p><span class="tag">Measured</span></div>
+        <dl class="kv" id="fs-health"></dl>
+        <div class="sparks">
+          <figure class="spark">
+            <figcaption class="telemetry muted">Buffer health · last 5 min <span id="fs-buf-range"></span></figcaption>
+            <svg id="fs-spark-buf" preserveAspectRatio="none" aria-label="Buffer health history"></svg>
+          </figure>
+          <figure class="spark">
+            <figcaption class="telemetry muted">Lag · last 5 min <span id="fs-lag-range"></span></figcaption>
+            <svg id="fs-spark-lag" preserveAspectRatio="none" aria-label="Lag history"></svg>
+          </figure>
+        </div>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Network</p></div>
+        <dl class="kv" id="fs-network"></dl>
+        <p class="hint">Connection speed, dropped frames, codecs and latency mode live in YouTube's own stats panel: press Show YouTube stats. YouTube draws them inside its player and does not share the numbers with this page.</p>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Stream</p></div>
+        <dl class="kv" id="fs-stream"></dl>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">YouTube audience</p><span class="tag" id="fs-aud-tag">N·A</span></div>
+        <dl class="kv" id="fs-audience"></dl>
+        <p class="hint" id="fs-aud-hint"></p>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Recent events</p></div>
+        <ol class="log" id="fs-log"></ol>
+      </section>
+    </div>
+  </aside>
+
+  <dialog id="dialog" class="dialog" aria-labelledby="dialog-title">
+    <form method="dialog" class="dialog-form">
+      <h2 id="dialog-title"></h2>
+      <p id="dialog-body" class="dialog-body"></p>
+      <input id="dialog-input" class="input" hidden>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn btn-outline" formnovalidate>Cancel</button>
+        <button id="dialog-confirm" value="confirm" class="btn"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="tile-template">
+    <div class="tile">
+      <div class="screen">
+        <div class="frame"></div>
+        <div class="shield" title="Click to hear this feed (mutes the others)"></div>
+        <span class="tile-actions">
+          <button class="btn btn-xs btn-overlay" data-act="priority" aria-pressed="false" title="Priority feeds load first and stream at higher quality">Priority</button>
+          <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge">Jump live</button>
+          <button class="btn btn-xs btn-overlay" data-act="reload" title="Hard-refresh this player">Refresh</button>
+          <button class="btn btn-xs btn-overlay btn-icon" data-act="full" title="Fullscreen" aria-label="Fullscreen">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
+          </button>
+          <button class="btn btn-xs btn-overlay btn-icon" data-act="remove" title="Remove from wall" aria-label="Remove">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="info">
+        <div class="info-head">
+          <span class="status"><span class="status-dot"></span><span class="status-text"></span></span>
+          <span class="label" title="Double-click to rename"></span>
+          <span class="tag prio-tag">Priority</span>
+          <span class="tag tag-accent audio-tag">Audio</span>
+          <button class="btn btn-xs btn-ghost stats-btn" data-act="stats" title="Feed health, network and YouTube stats">Stats</button>
+        </div>
+        <div class="tile-stats">
+          <span class="stats-list">
+            <span data-stat="latency" title="Time between a frame reaching YouTube and appearing here (includes this PC's clock offset)"></span>
+            <span data-stat="buffer" title="Buffer health: seconds of video downloaded ahead of the playhead"></span>
+            <span data-stat="drift"></span>
+            <span data-stat="quality" title="Resolution the player reports it is streaming"></span>
+            <span data-stat="stalls"></span>
+            <span data-stat="jumps"></span>
+            <span data-stat="reloads"></span>
+            <span data-stat="refresh"></span>
+          </span>
+          <span class="tag">Measured</span>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
