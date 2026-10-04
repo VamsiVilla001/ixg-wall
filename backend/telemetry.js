@@ -1,5 +1,7 @@
 // System telemetry for the wall: CPU and memory from Node, network and GPU engine load from
 // a long-running Windows counter agent. Emits one merged sample per interval.
+// Hosted, the server isn't the machine showing the wall, so its numbers would mislead:
+// samples then carry only a timestamp, a heartbeat that tells pages the backend is up.
 const os = require('os');
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
@@ -8,9 +10,10 @@ const { assetPath } = require('./assets');
 const AGENT_STALE_MS = 8000;
 
 class Telemetry extends EventEmitter {
-  constructor({ intervalMs = 2000 } = {}) {
+  constructor({ intervalMs = 2000, hosted = false } = {}) {
     super();
     this.intervalMs = intervalMs;
+    this.hosted = hosted;
     this.latest = null;
     this.agentSample = null;
     this.agent = null;
@@ -21,7 +24,7 @@ class Telemetry extends EventEmitter {
   start() {
     this.prevCpu = cpuTimes();
     this.timer = setInterval(() => this.sample(), this.intervalMs);
-    if (process.platform === 'win32') this.startAgent();
+    if (process.platform === 'win32' && !this.hosted) this.startAgent();
   }
 
   stop() {
@@ -67,6 +70,11 @@ class Telemetry extends EventEmitter {
 
   sample() {
     const now = Date.now();
+    if (this.hosted) {
+      this.latest = { t: now, agent: 'hosted' };
+      this.emit('sample', this.latest);
+      return;
+    }
     const cur = cpuTimes();
     const busy = cur.busy - this.prevCpu.busy;
     const total = cur.total - this.prevCpu.total;

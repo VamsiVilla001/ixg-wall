@@ -154,7 +154,8 @@ async function main() {
   const script = path.join(WORK, 'ixg-wall.js');
   fs.writeFileSync(script, bundle('server.js'));
 
-  const assetKeys = [...listFiles('public'), 'telemetry/win-counters.ps1'];
+  // The Feed Meter extension rides along: the wall offers it as a download (backend/extension.js).
+  const assetKeys = [...listFiles('public'), 'telemetry/win-counters.ps1', ...listFiles('extension')];
   const assets = Object.fromEntries(assetKeys.map((k) => [k, path.join(ROOT, k)]));
   const blob = path.join(WORK, 'sea.blob');
   const config = path.join(WORK, 'sea-config.json');

@@ -19,8 +19,9 @@
     bandwidthMbps: 0,          // 0 = unknown: boosts are governed by stall feedback alone
     priorityQuality: 'hd1080',
     loadConcurrency: 2,
-    ytApiKey: '',              // optional YouTube Data API v3 key for audience stats
     ytPollSec: 30,             // how often the backend asks YouTube (1 quota unit per 50 feeds)
+    syncFeeds: true,           // hold every live feed at one shared delay
+    syncMarginSec: 1,          // sync target = slowest feed's edge delay + this
   };
   const LIMITS = {
     checkIntervalSec: [1, 30],
@@ -31,6 +32,7 @@
     scrollColumns: [1, 4],
     cardPct: [20, 45],
     ytPollSec: [15, 300],
+    syncMarginSec: [0, 10],
   };
   const FEED_QUALITIES = ['large', 'hd720', 'hd1080'];
   const OFFSCREEN_RELEASE_MS = 60000; // a feed scrolled out of view keeps its quality this long, then drops to 480p
@@ -68,6 +70,17 @@
   const HISTORY_MS = 300000;          // feed stats sparklines cover the last 5 minutes
   const NERDS_MIN_RENDER_PX = 560;    // YouTube's stats panel is ~510px wide inside the player
   const SIDE_MIN_PX = 120;            // spare width beside the 16:9 video needed for the side panel
+  // Sync: every live feed carries the same input, so the wall holds all of them at one delay.
+  // Target = the slowest feed's edge delay + a margin; feeds ahead are held back (YouTube's
+  // live rewind), feeds behind catch up. Small offsets close by playing 0.75× / 1.25×.
+  const SYNC_TOLERANCE_S = 0.3;       // within this of the target counts as in sync
+  // Further off than this: seek instead of changing speed. Seeks land on YouTube's segment
+  // boundaries (measured: up to ~7 s short), so what a seek leaves over is closed by speed.
+  const SYNC_NUDGE_MAX_S = 10;
+  const SYNC_MAX_SPREAD_S = 15;       // a feed whose edge delay is this far past the others isn't allowed to drag them
+  const SYNC_RETARGET_S = 0.5;        // the target only moves for a change bigger than this
+  const SYNC_SLOW_RATE = 0.75;
+  const SYNC_COOLDOWN_MS = 4000;      // after a correction, let the samples settle before the next
   const CATCHUP_RATE = 1.25;          // close small drift by playing faster instead of a visible jump
   const CATCHUP_MAX_DRIFT_S = 15;     // further behind than this: jump
   const CATCHUP_MAX_MS = 60000;       // a catch-up that hasn't finished by now becomes a jump
@@ -84,6 +97,10 @@
   const REFRESH_DEFER_MS = 120000;    // a busy laptop postpones scheduled refreshes by this...
   const REFRESH_DEFER_MAX_MS = 600000; // ...up to this much in total
   const BACKEND_STALE_MS = 8000;
+  // IXG Wall Feed Meter (Chrome extension, extension/): reports from inside each player.
+  const METER_STALE_MS = 8000;        // a report older than this no longer describes the feed
+  const METER_HELLO_GAP_MS = 5000;    // how often a feed without reports asks again
+  const HEADROOM_LOW = 1.2;           // connection under 1.2× the bitrate: stalls are coming
 
   const VIDEO_ID = /^[\w-]{11}$/;
   const PS = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 };
@@ -108,7 +125,7 @@
     100: 'Not found or private',
     101: 'Unavailable or embed blocked',
     150: 'Unavailable or embed blocked',
-    153: 'Missing referrer — open via http://localhost',
+    153: 'Missing referrer — YouTube needs the page address; open the wall over http(s), not as a file',
   };
   // Short codes for the fixed-width status chip; the full text is the chip's tooltip.
   const ERROR_CODE = { 2: 'Bad ID', 5: 'Error', 100: 'Not found', 101: 'Blocked', 150: 'Blocked', 153: 'Referrer' };
@@ -128,7 +145,7 @@
     },
     saveLocal() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings, streams }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings, session, streams, savedSessions }));
       } catch {
         // storage unavailable: the backend copy (if any) still has it
       }
@@ -142,7 +159,32 @@
   };
 
   const settings = { ...DEFAULT_SETTINGS };
+  // Sessions: `streams` are the active session's feeds, the only ones that load. Earlier
+  // sessions keep their feeds in `savedSessions` until someone reopens one.
   const streams = [];
+  let session = null;          // { id, name, startedAt }
+  const savedSessions = [];    // [{ id, name, startedAt, endedAt, streams }], newest first
+  const MAX_SAVED_SESSIONS = 50;
+  const validStream = (s) => s && s.id && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id);
+  // Sessions are stamped in UTC (startedAt, endedAt) with the browser's time zone, and always
+  // shown in local time: "Sat, 4 Oct 2026, 15:42 GMT+5:30".
+  const LOCAL_ZONE = (() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+  })();
+  function localStamp(iso, { zone = false, short = false, timeOnly = false } = {}) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || Number.isNaN(d.getTime())) return '—';
+    const opts = timeOnly ? { hour: '2-digit', minute: '2-digit' }
+      : short ? { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }
+        : { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+    if (zone) opts.timeZoneName = 'short';
+    return d.toLocaleString([], opts);
+  }
+  const newSession = (name) => {
+    const startedAt = new Date().toISOString();
+    return { id: uid(), name: name || `Session ${localStamp(startedAt)}`, startedAt, timeZone: LOCAL_ZONE };
+  };
+
   function applyWall(data) {
     Object.assign(settings, DEFAULT_SETTINGS, data?.settings || {});
     for (const [key, [lo, hi]] of Object.entries(LIMITS)) {
@@ -151,13 +193,62 @@
     if (!['hd720', 'hd1080'].includes(settings.priorityQuality)) settings.priorityQuality = DEFAULT_SETTINGS.priorityQuality;
     if (!['scroll', 'fit'].includes(settings.layoutMode)) settings.layoutMode = DEFAULT_SETTINGS.layoutMode;
     if (!FEED_QUALITIES.includes(settings.feedQuality)) settings.feedQuality = DEFAULT_SETTINGS.feedQuality;
-    if (typeof settings.ytApiKey !== 'string') settings.ytApiKey = '';
-    const list = Array.isArray(data?.streams) ? data.streams : [];
-    streams.splice(0, streams.length, ...list.filter((s) => s && s.id && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id)));
+    delete settings.ytApiKey; // walls saved before the key moved to the server carried it here
+    const list = (Array.isArray(data?.streams) ? data.streams : []).filter(validStream);
+    const saved = (Array.isArray(data?.savedSessions) ? data.savedSessions : [])
+      .filter((s) => s && s.id && typeof s.name === 'string' && Array.isArray(s.streams))
+      .map((s) => ({ ...s, streams: s.streams.filter(validStream) }));
+    if (data?.session?.id) {
+      session = {
+        id: data.session.id,
+        name: String(data.session.name || 'Session'),
+        startedAt: data.session.startedAt || null,
+        timeZone: data.session.timeZone || null,
+      };
+      streams.splice(0, streams.length, ...list);
+    } else {
+      // A wall from before sessions (this browser's copy, with the backend offline): as the
+      // server does, its feeds become a saved session and the wall starts empty.
+      if (list.length) saved.unshift({ ...newSession('Before sessions'), endedAt: new Date().toISOString(), streams: list });
+      session = newSession();
+      streams.length = 0;
+    }
+    savedSessions.splice(0, savedSessions.length, ...saved.slice(0, MAX_SAVED_SESSIONS));
   }
   applyWall(store.load());
 
-  // ---- The backend's copy of the wall --------------------------------------------
+  // ---- The server: what it is, and its copy of the wall -------------------------------
+  // Hosted (a website) the server isn't the machine showing the wall: no laptop readouts or
+  // wall window, and a sign-in. The YouTube key stays on the server; pages only learn
+  // whether one is set (and its last 4 characters).
+  const server = { hosted: false, auth: false, ytKey: { set: false, source: null, last4: '' } };
+  const hasYtKey = () => !!server.ytKey?.set;
+
+  function toSignIn() {
+    const here = location.pathname + location.search;
+    location.assign(here === '/' ? '/login' : `/login?next=${encodeURIComponent(here)}`);
+  }
+
+  // fetch() for the wall's own API: a lapsed sign-in sends the page to the sign-in screen.
+  async function api(url, opts) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) toSignIn();
+    return res;
+  }
+
+  async function loadServerConfig() {
+    if (location.protocol === 'file:') return;
+    try {
+      const res = await api('/api/config', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+      if (res.ok) Object.assign(server, await res.json()); // an older backend answers 404: laptop defaults
+    } catch {
+      // backend offline: laptop defaults
+    }
+    document.body.classList.toggle('hosted', server.hosted);
+    $('#sign-out').hidden = !server.auth;
+    setText($('#perf-title'), server.hosted ? 'This computer & rendering' : 'Laptop & rendering');
+  }
+
   const clientId = uid();
   let wallVersion = 0;
   let backendWall = false; // the backend answered, so saves go to it
@@ -165,7 +256,7 @@
   async function loadServerWall() {
     if (location.protocol === 'file:') return;
     try {
-      const res = await fetch('/api/wall', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+      const res = await api('/api/wall', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
       if (!res.ok) return;
       const body = await res.json();
       backendWall = true;
@@ -184,10 +275,10 @@
   async function pushWall() {
     if (!backendWall) return;
     try {
-      const res = await fetch('/api/wall', {
+      const res = await api('/api/wall', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
-        body: JSON.stringify({ wall: { settings, streams }, clientId }),
+        body: JSON.stringify({ wall: { settings, session, streams, savedSessions }, clientId }),
       });
       if (res.ok) wallVersion = (await res.json()).version;
     } catch {
@@ -195,8 +286,17 @@
     }
   }
 
+  // The wall's sync group, worked out every loop (updateSync).
+  const sync = {
+    target: null,          // seconds of delay every member is held at
+    setBy: null,           // the tile whose edge delay sets it
+    members: new Set(),
+    excluded: new Map(),   // tile -> why it isn't synced
+    spread: null,          // max − min delay across members right now
+  };
   const tiles = new Map(); // stream.id -> Tile
   const events = [];
+  const activeAlerts = new Map(); // feed id -> the current alert and when it began
   const loadQueue = []; // tiles waiting for a load slot, priority feeds first
   const wall = {
     stallLog: [],        // { t, id } for stalls during playback, newest last
@@ -211,6 +311,7 @@
   let ytStatsAt = 0;
   let ytState = null;        // the backend's last YouTube report: status, quota, wall totals
   let ytChecking = false;    // a new key was saved and the backend hasn't answered yet
+  let ytKeyError = '';       // why the last key save failed
   let backendYoutube = null; // false: the running backend predates YouTube polling (restart it)
   let viewerSeries = { id: null, series: [] }; // audience history for the inspected feed
   let inspected = null;      // tile whose feed stats sheet is open
@@ -235,15 +336,14 @@
   const $grid = $('#grid');
   const $empty = $('#empty');
   const $readout = {
-    playing: $('#r-playing'), latency: $('#r-latency'), load: $('#r-load'), issues: $('#r-issues'),
-    bwNow: $('#r-bw-now'), cpu: $('#r-cpu'),
+    playing: $('#r-playing'), latency: $('#r-latency'), load: $('#r-load'),
+    bwNow: $('#r-bw-now'), cpu: $('#r-cpu'), getting: $('#r-getting'),
   };
   const $addPanel = $('#add-panel');
   const $addToggle = $('#add-toggle');
   const $liveBadge = $('#live-badge');
   const $form = $('#add-form');
   const $source = $('#source');
-  const $label = $('#label');
   const $formError = $('#form-error');
   const $banner = $('#banner');
   const $drawer = $('#drawer');
@@ -288,6 +388,12 @@
   }
 
   // Seconds as a clock reading: 1:23:45, or 4:05 under an hour.
+  // A signed offset in seconds: +1.2s, −0.4s, ±0.0s.
+  function fmtSigned(sec) {
+    const v = Math.round(sec * 10) / 10;
+    return `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v).toFixed(1)}s`;
+  }
+
   function fmtClock(sec) {
     if (sec == null || !Number.isFinite(sec) || sec < 0) return '—';
     const s = Math.floor(sec);
@@ -308,29 +414,8 @@
     return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
   }
 
-  function parseSource(raw) {
-    const s = raw.trim();
-    if (VIDEO_ID.test(s)) return { kind: 'video', id: s };
-    let url;
-    try {
-      url = new URL(s.includes('://') ? s : `https://${s}`);
-    } catch {
-      return null;
-    }
-    const host = url.hostname.replace(/^(www|m|music)\./, '');
-    if (host === 'youtu.be') {
-      const id = url.pathname.slice(1).split('/')[0];
-      return VIDEO_ID.test(id) ? { kind: 'video', id } : null;
-    }
-    if (host !== 'youtube.com' && host !== 'youtube-nocookie.com') return null;
-    const v = url.searchParams.get('v');
-    if (v && VIDEO_ID.test(v)) return { kind: 'video', id: v };
-    const [first, second = ''] = url.pathname.split('/').filter(Boolean);
-    if (['live', 'embed', 'shorts', 'v'].includes(first) && second !== 'live_stream' && VIDEO_ID.test(second)) {
-      return { kind: 'video', id: second };
-    }
-    return null;
-  }
+  // Link parsing and reading links out of pasted messages live in links.js.
+  const { parseSource, readMessage, CHANNEL_LINK } = window.IXGLinks;
 
   function embedSrc(source, host) {
     const params = new URLSearchParams({
@@ -355,8 +440,40 @@
   }
 
   function renderLog() {
-    if ($drawer.hidden) return;
+    if ($('#wall-stats-panel').hidden) return;
     $log.replaceChildren(...logItems(events));
+  }
+
+  // Record state changes once, including short interruptions between health checks.
+  // The active list stays separate from history, so clearing the log can't hide a fault.
+  function syncWallAlerts() {
+    for (const [id, tile] of tiles) {
+      const key = tile.error ? `error:${tile.error}` : tile.ps === PS.BUFFERING ? 'buffering' : tile.ps === PS.PAUSED ? 'paused' : null;
+      if (!key) continue;
+      const [label, level, text] = tile.status();
+      const previous = activeAlerts.get(id);
+      if (previous?.key === key) {
+        previous.who = tile.stream.label;
+        previous.text = text;
+        continue;
+      }
+      activeAlerts.set(id, { key, label, t: new Date(), who: tile.stream.label, text, level });
+      logEvent(tile, text, level);
+    }
+    for (const [id, alert] of activeAlerts) {
+      const tile = tiles.get(id);
+      if (tile && (tile.error || tile.ps === PS.BUFFERING || tile.ps === PS.PAUSED)) continue;
+      activeAlerts.delete(id);
+      const outcome = !tile ? 'feed removed from the wall' : tile.ps === PS.PLAYING ? 'playback resumed' : 'player restarted or changed state';
+      logEvent(tile || { stream: { id, label: alert.who } }, `${alert.label} alert cleared: ${outcome}.`);
+    }
+    renderActiveAlerts();
+  }
+
+  function renderActiveAlerts() {
+    if ($('#wall-stats-panel').hidden) return;
+    $('#alerts-empty').hidden = activeAlerts.size > 0;
+    $('#active-alerts').replaceChildren(...logItems([...activeAlerts.values()].sort((a, b) => b.t - a.t)));
   }
 
   function logItems(list) {
@@ -365,6 +482,7 @@
       li.dataset.level = e.level;
       const time = document.createElement('time');
       time.textContent = e.t.toLocaleTimeString();
+      time.dateTime = e.t.toISOString();
       const who = document.createElement('span');
       who.className = 'who';
       who.textContent = e.who;
@@ -398,12 +516,20 @@
       $input.placeholder = input.placeholder || '';
       $input.setAttribute('aria-label', input.label || title);
     }
+    // Enter in the field confirms. (Left to the form, it would press the first button: Cancel.)
+    const onKey = (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      $dialog.close('confirm');
+    };
+    if (input != null) $input.addEventListener('keydown', onKey);
     $dialog.returnValue = '';
     $dialog.showModal();
     if (input != null) $input.select();
     else $confirm.focus();
     return new Promise((resolve) => {
       $dialog.addEventListener('close', () => {
+        $input.removeEventListener('keydown', onKey);
         if ($dialog.returnValue !== 'confirm') return resolve(null);
         resolve(input != null ? $input.value.trim() : true);
       }, { once: true });
@@ -447,7 +573,7 @@
   class Tile {
     constructor(stream) {
       this.stream = stream;
-      this.stats = { stalls: 0, stallMs: 0, resyncs: 0, reloads: 0, catchups: 0, rebaselines: 0, lastStallAt: 0 };
+      this.stats = { stalls: 0, stallMs: 0, resyncs: 0, reloads: 0, catchups: 0, rebaselines: 0, syncs: 0, lastStallAt: 0 };
       this.deferredMs = 0;          // scheduled refresh postponed while the laptop is busy
       this.lastRebaselineLogAt = 0;
       this.player = null;
@@ -499,7 +625,7 @@
       };
       this.$play = {};
       this.el.querySelectorAll('[data-play]').forEach((n) => { this.$play[n.dataset.play] = n; });
-      this.$vital = {}; // the Lag and Drift labels, which read Time and Length for a recording
+      this.$vital = {}; // the Delay and Behind edge / Sync labels, which read Time and Length for a recording
       this.el.querySelectorAll('[data-vital]').forEach((n) => { this.$vital[n.dataset.vital] = n.querySelector('dt'); });
       this.el.querySelectorAll('[data-yt]').forEach((n) => { this.$side[n.dataset.yt] = n; });
       this.$drops = [...this.el.querySelectorAll('.side [data-drop]')]
@@ -510,7 +636,7 @@
       this.$side.note.addEventListener('click', () => {
         if (!this.$side.note.hasAttribute('data-link')) return;
         setDrawer(true);
-        $drawer.querySelector('[data-setting="ytApiKey"]')?.focus();
+        $('#yt-key-input')?.focus();
       });
 
       this.el.querySelector('.shield').addEventListener('click', () => toggleSolo(this));
@@ -521,6 +647,7 @@
         if (act === 'priority') togglePriority(this);
         else if (act === 'resync') this.resync('manual');
         else if (act === 'reload') this.reload('manual', 'info', true);
+        else if (act === 'link') changeLink(this);
         else if (act === 'full') toggleFullscreen(this.el);
         else if (act === 'remove') removeTile(this);
       });
@@ -545,6 +672,34 @@
       this.$label.textContent = label;
       this.frame.querySelector('iframe')?.setAttribute('title', label);
       store.save();
+    }
+
+    // Point this feed at another video. It keeps its place, priority and any label an
+    // operator gave it; telemetry starts over, since it described the old stream.
+    changeSource(source) {
+      const from = this.stream.source.id;
+      this.stream.source = source;
+      // A label taken from YouTube's title belonged to the old video: the new title replaces it on load.
+      if (this.stream.autoLabel) this.setLabel(source.id, true);
+      else store.save(); // the backend polls YouTube for the new video within seconds
+      this.stats = { stalls: 0, stallMs: 0, resyncs: 0, reloads: 0, catchups: 0, rebaselines: 0, syncs: 0, lastStallAt: 0 };
+      this.history = [];
+      this.ttff = null;
+      this.lastError = null;
+      this.stuckStrikes = 0;
+      this.retryDelay = RETRY_MIN_MS;
+      this.deferredMs = 0;
+      logEvent(this, `Link changed: ${from} → ${source.id}`);
+      this.unmount();
+      this.reset();
+      requestMount(this, true);
+      this.scheduleReload();
+      this.pulse('reload');
+      this.render();
+      if (inspected === this) {
+        renderFeedSheet();
+        if (hasYtKey()) loadViewerHistory(this);
+      }
     }
 
     reset() {
@@ -574,9 +729,14 @@
       this.dvrWindow = null;
       this.liveFor = null;
       this.catchUp = null;          // { since, from } while playing faster to close drift
+      clearTimeout(this.nudgeTimer);
+      this.nudge = null;            // { since, off, rate } while changing speed to reach the sync target
+      this.lastSyncActAt = 0;
       this.preJumpLag = null;       // lag before our last jump, to check the jump helped
       this.lastCurrent = null;      // playhead position, to spot a frozen player
       this.lastAdvanceAt = now;
+      this.meter = null;            // the Feed Meter extension's latest report for this player
+      this.lastHelloAt = 0;
     }
 
     mount() {
@@ -585,6 +745,7 @@
       iframe.src = embedSrc(this.stream.source, this.host);
       iframe.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
       iframe.title = this.stream.label;
+      iframe.addEventListener('load', () => this.helloMeter());
       this.frame.replaceChildren(iframe);
       this.mounted = true;
       this.loadedAt = Date.now();
@@ -600,6 +761,8 @@
     }
 
     unmount() {
+      clearTimeout(this.nudgeTimer);
+      this.nudge = null;
       this.gen++;
       try {
         this.player?.destroy();
@@ -646,6 +809,41 @@
     estMbps() {
       if (!this.mounted || this.error) return 0;
       return QUALITY[this.quality || this.targetQuality()].mbps;
+    }
+
+    // The Feed Meter extension's latest report for this player, while it is recent.
+    meterNow(now = Date.now()) {
+      return this.meter && now - this.meter.at < METER_STALE_MS ? this.meter : null;
+    }
+
+    // Asks the Feed Meter in this player (if installed) to report to this page.
+    helloMeter() {
+      this.lastHelloAt = Date.now();
+      try {
+        this.frame.querySelector('iframe')?.contentWindow?.postMessage({ type: 'ixg-wall-hello', v: 1 }, this.host);
+      } catch {
+        // the frame is being replaced
+      }
+    }
+
+    // Mbps this feed streams at, and whether that's measured or estimated.
+    bitrate(now = Date.now()) {
+      const m = this.meterNow(now);
+      if (m?.bitrateMbps != null) return { mbps: m.bitrateMbps, measured: true };
+      return { mbps: this.estMbps(), measured: false };
+    }
+
+    // The player's connection speed over the stream's bitrate: below HEADROOM_LOW it can't keep up.
+    headroom(now = Date.now()) {
+      const m = this.meterNow(now);
+      return m?.connectionMbps != null && m?.bitrateMbps ? m.connectionMbps / m.bitrateMbps : null;
+    }
+
+    // What the player streams: 1080p60 from the meter, else YouTube's quality level.
+    qualityLabel(now = Date.now()) {
+      const m = this.meterNow(now);
+      if (m?.height) return `${m.height}p${m.fps && m.fps > 30 ? m.fps : ''}`;
+      return this.quality ? QUALITY[this.quality].label : null;
     }
 
     // A tile wider than its 16:9 video moves the video left and fills the spare width with
@@ -818,6 +1016,7 @@
         this.bufferingSince = null;
         this.countingStall = false;
       }
+      if (s !== PS.PLAYING && this.nudge) this.endNudge();
       if (s === PS.BUFFERING) {
         // Playing faster ran into the end of what's downloaded: that's the edge for now.
         if (this.catchUp) this.endCatchUp('Caught up to the buffered edge');
@@ -844,21 +1043,25 @@
       }
       this.ps = s;
       this.stateSince = now;
+      syncWallAlerts();
       this.render();
     }
 
     onError(code) {
+      this.endNudge();
       this.error = code;
       this.errorAt = Date.now();
       this.fatal = FATAL_ERRORS.has(code);
       this.lastError = { code, text: ERROR_TEXT[code] || 'Player error', at: this.errorAt };
-      logEvent(this, `${ERROR_TEXT[code] || 'Player error'} (code ${code})`, 'bad');
+      syncWallAlerts();
       setTimeout(pumpQueue, 0);
       this.render();
     }
 
     tick(now) {
       if (this.fatal || this.queued || !this.mounted) return this.render();
+      // The meter may have loaded after the player, or the wall reloaded: keep asking.
+      if (!this.meterNow(now) && now - this.lastHelloAt > METER_HELLO_GAP_MS) this.helloMeter();
       if (now >= this.nextReloadAt) {
         // A reload is a CPU and network spike; on a busy laptop, wait for it to settle.
         if (perf.level !== 'ok' && this.deferredMs < REFRESH_DEFER_MAX_MS) {
@@ -947,6 +1150,9 @@
       if (this.samples.length >= 3 && sane) this.baseline = Math.min(this.baseline, this.latency);
       this.drift = Number.isFinite(this.baseline) ? this.latency - this.baseline : null;
 
+      // In the wall's sync group the target is the shared delay, not this feed's own edge.
+      if (sane && sync.target != null && sync.members.has(this)) return this.keepInSync(now);
+
       if (this.catchUp) {
         if (this.drift != null && this.drift < 1) this.endCatchUp('Caught up smoothly');
         else if (now - this.catchUp.since > CATCHUP_MAX_MS) {
@@ -974,15 +1180,98 @@
       }
     }
 
+    // ---- Sync: hold this feed at the wall's shared delay ------------------------------
+    // Seconds off the sync target: + late (more delay than the others), − early. Null when
+    // this feed isn't in the sync group.
+    syncOffset() {
+      return sync.target != null && sync.members.has(this) && this.latency != null ? this.latency - sync.target : null;
+    }
+
+    // Whether YouTube lets this broadcast be played behind its live edge (live rewind / DVR).
+    allowsRewind() {
+      return this.player?.getVideoData?.()?.allowLiveDvr;
+    }
+
+    keepInSync(now) {
+      if (this.catchUp) this.endCatchUp();
+      if (this.nudge) return; // a speed nudge is running; it ends on its own
+      if (this.samples.length < 3 || now - this.lastSyncActAt < SYNC_COOLDOWN_MS) return;
+      const off = this.latency - sync.target;
+      if (Math.abs(off) <= SYNC_TOLERANCE_S || !settings.autoResync) return;
+      const rate = off > 0 ? CATCHUP_RATE : SYNC_SLOW_RATE;
+      const rates = this.player.getAvailablePlaybackRates?.() || [];
+      if (Math.abs(off) <= SYNC_NUDGE_MAX_S && rates.includes(rate)) {
+        this.startNudge(off, rate, now);
+        return;
+      }
+      if (wall.autoJumpsLeft <= 0) return; // spread big corrections over ticks
+      wall.autoJumpsLeft--;
+      this.syncSeek(off, now);
+    }
+
+    // 1.25× gains 0.25 s of delay back per second; 0.75× gives 0.25 s away. The timer ends the
+    // nudge exactly when the offset is closed, whatever the health-check interval.
+    startNudge(off, rate, now) {
+      try {
+        this.player.setPlaybackRate(rate);
+      } catch {
+        return;
+      }
+      this.nudge = { since: now, off, rate };
+      this.lastSyncActAt = now;
+      this.stats.syncs++;
+      clearTimeout(this.nudgeTimer);
+      this.nudgeTimer = setTimeout(() => this.endNudge(), (Math.abs(off) / Math.abs(rate - 1)) * 1000);
+      if (Math.abs(off) >= 1) logEvent(this, `Sync: ${off > 0 ? 'catching up' : 'easing back'} ${Math.abs(off).toFixed(1)}s at ${rate}×`);
+    }
+
+    endNudge() {
+      clearTimeout(this.nudgeTimer);
+      if (!this.nudge) return;
+      this.nudge = null;
+      try {
+        this.player?.setPlaybackRate(1);
+      } catch {
+        // player is gone; a new one starts at normal speed
+      }
+      this.samples = []; // measure afresh at normal speed
+      this.lastSyncActAt = Date.now();
+    }
+
+    // Late: forward (clamps at the live edge). Early: back into YouTube's live rewind.
+    syncSeek(off, now) {
+      if (!this.player || !this.ready || this.error) return;
+      this.endNudge();
+      this.endCatchUp();
+      // A sync seek aims behind the live edge, so its result cannot establish a new edge.
+      this.preJumpLag = null;
+      this.ignoreStallUntil = now + 8000;
+      this.player.seekTo(this.player.getCurrentTime() + off, true);
+      this.samples = [];
+      // YouTube snaps seeks to segments. Keep the last measured delay until it reports
+      // where it actually landed; a requested position isn't a measurement.
+      this.playingSince = now;
+      this.lastSyncActAt = now;
+      this.stats.syncs++;
+      logEvent(this, `Sync: ${off > 0 ? 'jumped forward' : 'held back'} ${Math.abs(off).toFixed(1)}s to the wall's ${sync.target.toFixed(1)}s delay`);
+      this.pulse('resync');
+    }
+
     lagText() {
       return this.drift != null && this.latency <= MAX_LAG_S
-        ? `+${this.drift.toFixed(1)}s behind`
-        : `${Math.round(this.latency)}s behind real time`;
+        ? `+${this.drift.toFixed(1)}s behind edge`
+        : `${Math.round(this.latency)}s delay`;
     }
 
     resync(reason) {
       if (!this.player || !this.ready || this.error || this.isLive === false) return;
       const now = Date.now();
+      // In the sync group "live" means the wall's shared delay, not this feed's own edge.
+      if (sync.target != null && sync.members.has(this) && this.latency != null) {
+        this.endNudge();
+        this.syncSeek(this.latency - sync.target, now);
+        return;
+      }
       if (this.catchUp) this.endCatchUp();
       this.preJumpLag = this.latency;
       this.ignoreStallUntil = now + 8000;
@@ -1030,12 +1319,20 @@
       const ended = yt?.endedAt ? `Broadcast ended at ${clockTime(yt.endedAt)}` : '';
       switch (this.ps) {
         case PS.PLAYING:
-          if (this.catchUp) return ['Catch-up', 'ok', `Playing at ${CATCHUP_RATE}× to close +${(this.catchUp.from || 0).toFixed(1)}s of drift`];
-          if (this.isLive) return ['Live', 'ok', 'Playing live'];
+          if (this.nudge) {
+            return ['Syncing', 'ok', `Playing at ${this.nudge.rate}× to ${this.nudge.off > 0 ? 'catch up' : 'ease back'} ${Math.abs(this.nudge.off).toFixed(1)}s to the wall's sync delay`];
+          }
+          if (this.catchUp) return ['Catch-up', 'ok', `Playing at ${CATCHUP_RATE}× to release +${(this.catchUp.from || 0).toFixed(1)}s of build-up behind the live edge`];
+          if (this.isLive) {
+            const off = this.syncOffset();
+            return ['Live', 'ok', off == null ? 'Playing live' : `Playing live, ${Math.abs(off) <= SYNC_TOLERANCE_S ? 'in sync with the wall' : `${fmtSigned(off)} off the wall's sync delay`}`];
+          }
           if (ended) return ['Ended', 'warn', `${ended} · playing the recording`];
           return ['Playing', 'ok', yt?.startedAt ? 'Playing the recording of a broadcast' : 'Playing a video, not a live stream'];
         // A live broadcast that isn't moving is a red flag, never amber.
-        case PS.BUFFERING: return ['Buffering', 'bad', 'Buffering: the picture has stopped'];
+        case PS.BUFFERING: return this.countingStall
+          ? ['Rebuffering', 'bad', 'Rebuffering: this PC\'s player ran out of downloaded video and stopped. Every second adds to Behind edge']
+          : ['Buffering', 'bad', 'Buffering: loading video after a start or a jump; the picture has stopped'];
         case PS.PAUSED: return ['Paused', 'warn', 'Paused — resuming automatically'];
         case PS.ENDED: return ended ? ['Ended', 'warn', `${ended} · retrying in case it restarts`] : ['Ended', 'idle', 'Stream ended — retrying in case it restarts'];
         default:
@@ -1046,7 +1343,7 @@
 
     // What the YouTube Data API reports for this video, when there's a key and an answer.
     ytInfo() {
-      if (!settings.ytApiKey.trim()) return null;
+      if (!hasYtKey()) return null;
       const yt = ytStats.get(this.stream.source.id);
       return yt && !yt.missing ? yt : null;
     }
@@ -1088,7 +1385,8 @@
       // Info bar: every tile shows the same readings in the same order; '—' where one doesn't apply.
       const r = this.readings(now);
       const rec = this.isLive === false;
-      const labels = { latency: rec ? 'TIME' : 'LAG', buffer: 'BUF', drift: rec ? 'LENGTH' : 'DRIFT', quality: 'Q', stalls: 'STALLS', jumps: 'JUMPS', reloads: 'REFRESHES', refresh: 'NEXT REFRESH' };
+      const synced = this.syncOffset() != null;
+      const labels = { latency: rec ? 'TIME' : 'DELAY', buffer: 'BUFFER', drift: rec ? 'LENGTH' : synced ? 'SYNC' : 'BEHIND', quality: 'Q', bitrate: 'RATE', stalls: 'REBUFFERS', jumps: 'JUMPS', reloads: 'REFRESHES', refresh: 'NEXT REFRESH' };
       for (const [key, [value, tone]] of Object.entries(r)) {
         setText(this.$stat[key], `${labels[key]} ${key === 'refresh' ? value.toUpperCase() : value}`);
         setTone(this.$stat[key], tone);
@@ -1108,12 +1406,24 @@
       const t = settings.driftThresholdSec;
       const ongoing = this.countingStall && this.bufferingSince ? now - this.bufferingSince : 0;
       const ph = this.playhead();
+      const off = this.syncOffset();
+      const offAbs = off == null ? null : Math.abs(off);
       return {
+        // Delay: YouTube's stamp on the frame → this screen.
         latency: ph ? [fmtClock(ph.at), ''] : [this.latency == null ? '—' : `${this.latency.toFixed(1)}s`, ''],
-        // A thin buffer on a live broadcast is about to stall: red, not amber.
+        // Buffer ahead: downloaded here, not yet shown. Thin on a live broadcast means a stall is coming: red.
         buffer: [buf == null ? '—' : `${buf.toFixed(1)}s`, buf != null && buf < BUFFER_LOW_S ? 'bad' : ''],
-        drift: ph ? [fmtClock(ph.length), ''] : [d == null ? '—' : `+${d.toFixed(1)}s`, d == null ? '' : d < t / 2 ? 'ok' : d < t ? 'warn' : 'bad'],
-        quality: [this.quality ? QUALITY[this.quality].label : '—', ''],
+        // In the sync group: the offset from the wall's shared delay. Otherwise: build-up behind the live edge.
+        drift: ph ? [fmtClock(ph.length), '']
+          : off != null ? [fmtSigned(off), offAbs <= SYNC_TOLERANCE_S ? 'ok' : offAbs <= 1 ? 'warn' : 'bad']
+            : [d == null ? '—' : `+${d.toFixed(1)}s`, d == null ? '' : d < t / 2 ? 'ok' : d < t ? 'warn' : 'bad'],
+        quality: [this.qualityLabel(now) || '—', ''],
+        // Measured by the Feed Meter; red when the connection can't keep up with it.
+        bitrate: (() => {
+          const m = this.meterNow(now);
+          const h = this.headroom(now);
+          return [m?.bitrateMbps != null ? `${m.bitrateMbps.toFixed(1)} Mbps` : '—', h != null && h < HEADROOM_LOW ? 'bad' : ''];
+        })(),
         stalls: [`${this.stats.stalls} · ${((this.stats.stallMs + ongoing) / 1000).toFixed(1)}s`, this.stallFlagged(now) ? 'bad' : ''],
         jumps: [String(this.stats.resyncs), ''],
         reloads: [String(this.stats.reloads), ''],
@@ -1137,15 +1447,19 @@
 
       // Live: lag and drift. A recording: where the playhead is and how long it runs.
       const rec = this.playhead() != null;
-      setText(this.$vital.latency, rec ? 'Time' : 'Lag');
-      setText(this.$vital.drift, rec ? 'Length' : 'Drift');
+      const synced = this.syncOffset() != null;
+      setText(this.$vital.latency, rec ? 'Time' : 'Delay');
+      setText(this.$vital.drift, rec ? 'Length' : synced ? 'Sync' : 'Behind edge');
+      this.$vital.drift.parentElement.title = synced
+        ? `Offset from the wall's sync delay (${sync.target.toFixed(1)}s): + has more delay than the others, − less. Green within ±${SYNC_TOLERANCE_S}s`
+        : 'Behind edge: how far this PC\'s player sits behind the newest video YouTube has. Build-up the wall releases by catching up, jumping or refreshing';
       for (const [key, [value, valueTone]] of Object.entries(this.readings(now))) {
         setText(this.$play[key], value);
         setTone(this.$play[key], valueTone);
       }
 
       // YouTube: every block shows a number, or says plainly why there isn't one.
-      const hasKey = !!settings.ytApiKey.trim();
+      const hasKey = hasYtKey();
       const entry = hasKey ? ytStats.get(this.stream.source.id) : null;
       const yt = entry && !entry.missing ? entry : null;
       const ended = !!yt?.endedAt;
@@ -1200,6 +1514,11 @@
       setText(p.access, access || '—');
       // Embedding off or a private video: this wall can't show it. That's an outage, so red.
       setTone(p.access, yt && (yt.embeddable === false || yt.privacy === 'private') ? 'bad' : '');
+      // Encoder → YouTube, from the channel sign-in.
+      const ing = ingestInfo(this.stream.source.id);
+      setText(p.ingest, ing.text);
+      setTone(p.ingest, ing.tone);
+      p.ingest.title = ing.detail;
 
       let note = '';
       let noteTone = '';
@@ -1305,6 +1624,65 @@
 
   // Several feeds stalling inside a minute points at our link rather than one source.
   // Shed one priority boost at a time while that lasts; restore one after 5 calm minutes.
+  // Works out the wall's sync group and target. Every live feed that has found its edge
+  // delay takes part, except one whose edge is so far behind the rest that syncing to it would
+  // delay the whole wall, and one that would need holding back with YouTube's rewind turned off.
+  function updateSync() {
+    const before = new Set(sync.members);
+    const previousTarget = sync.target;
+    sync.members.clear();
+    sync.excluded.clear();
+    sync.spread = null;
+    const ready = settings.syncFeeds
+      ? [...tiles.values()].filter((t) => t.mounted && !t.error && t.isLive && Number.isFinite(t.baseline) && t.latency != null)
+      : [];
+    let candidates = [];
+    if (ready.length >= 2) {
+      const mid = median(ready.map((t) => t.baseline));
+      candidates = ready.filter((t) => {
+        const over = t.baseline - mid;
+        if (over <= SYNC_MAX_SPREAD_S) return true;
+        sync.excluded.set(t, `its edge delay is ${Math.round(over)} s more than the other feeds; syncing to it would delay the whole wall`);
+        return false;
+      });
+    }
+    if (candidates.length >= 2) {
+      const slowest = candidates.reduce((a, b) => (b.baseline > a.baseline ? b : a));
+      const target = slowest.baseline + settings.syncMarginSec;
+      // Hold the target steady: chasing every 0.1 s wobble would keep feeds changing speed.
+      if (sync.target == null || Math.abs(target - sync.target) > SYNC_RETARGET_S || !tiles.has(sync.setBy?.stream.id)) {
+        sync.target = target;
+      }
+      sync.setBy = slowest;
+      for (const t of candidates) {
+        const needsHoldingBack = t.baseline < sync.target - SYNC_TOLERANCE_S;
+        if (needsHoldingBack && t.allowsRewind() === false) {
+          sync.excluded.set(t, 'YouTube\'s live rewind (DVR) is off for this broadcast, so it can\'t be held back');
+        } else {
+          sync.members.add(t);
+        }
+      }
+    }
+    if (sync.members.size < 2) {
+      sync.members.clear();
+      sync.target = null;
+      sync.setBy = null;
+    }
+    measureSyncSpread();
+    // A feed that left the group goes back to its own live edge.
+    // Timed nudges were calculated for the old target. Stop them before correcting
+    // toward a new one, or they keep pushing a feed in the wrong direction.
+    for (const t of tiles.values()) {
+      if (!settings.autoResync || previousTarget !== sync.target || (before.has(t) && !sync.members.has(t))) t.endNudge();
+    }
+  }
+
+  // How far apart the synced feeds are; measured again after each round of corrections.
+  function measureSyncSpread() {
+    const delays = [...sync.members].map((t) => t.latency).filter((v) => v != null);
+    sync.spread = sync.target != null && delays.length >= 2 ? Math.max(...delays) - Math.min(...delays) : null;
+  }
+
   function updateCongestion(now) {
     wall.stallLog = wall.stallLog.filter((e) => now - e.t < CONGESTION_WINDOW_MS);
     const stalledFeeds = new Set(wall.stallLog.map((e) => e.id)).size;
@@ -1351,7 +1729,7 @@
     prev?.render();
     tile.render();
     renderFeedSheet();
-    if (settings.ytApiKey.trim()) loadViewerHistory(tile);
+    if (hasYtKey()) loadViewerHistory(tile);
   }
 
   function closeFeedSheet() {
@@ -1465,19 +1843,29 @@
     const ongoing = t.countingStall && t.bufferingSince ? now - t.bufferingSince : 0;
     const hoursOnWall = (now - t.addedAt) / 3600000;
     const t2 = settings.driftThresholdSec;
+    const off = t.syncOffset();
+    const excludedWhy = sync.excluded.get(t);
+    const behindHeld = off != null && t.drift != null;
     fillKv($('#fs-health'), [
       ['Status', detail, tone === 'idle' ? '' : tone],
-      ['Lag behind real time', t.latency == null ? null : `${t.latency.toFixed(1)}s`],
-      ['Buffer health', buf == null ? null : `${buf.toFixed(1)}s ahead`,
+      // Delay = Edge delay (YouTube's side) + Behind edge (this PC).
+      ['Delay · whole chain', t.latency == null ? null : `${t.latency.toFixed(1)}s from YouTube's stamp to this screen`],
+      ['Edge delay · YouTube side', Number.isFinite(t.baseline) ? `${t.baseline.toFixed(1)}s, the least this feed can have` : null],
+      ['Behind edge · this PC', t.drift == null ? null
+        : `+${Math.max(0, t.drift).toFixed(1)}s${behindHeld ? ', held there to stay in sync' : ''}`,
+      t.drift == null || behindHeld ? '' : t.drift < t2 / 2 ? '' : t.drift < t2 ? 'warn' : 'bad'],
+      ['Sync · wall', off != null
+        ? `${fmtSigned(off)} from the wall's ${sync.target.toFixed(1)}s${Math.abs(off) <= SYNC_TOLERANCE_S ? ' · in sync' : ''}`
+        : !settings.syncFeeds ? 'Off' : excludedWhy ? `Not synced: ${excludedWhy}` : t.isLive ? 'Waiting for a second live feed to sync with' : 'Not live',
+      off == null ? (excludedWhy ? 'warn' : '') : Math.abs(off) <= SYNC_TOLERANCE_S ? 'ok' : Math.abs(off) <= 1 ? 'warn' : 'bad'],
+      ['Buffer ahead · this PC', buf == null ? null : `${buf.toFixed(1)}s downloaded, waiting to play`,
         buf == null ? '' : buf < BUFFER_LOW_S ? 'bad' : 'ok'],
-      ['Drift from best lag', t.drift == null ? null : `+${Math.max(0, t.drift).toFixed(1)}s (best ${t.baseline.toFixed(1)}s)`,
-        t.drift == null ? '' : t.drift < t2 / 2 ? '' : t.drift < t2 ? 'warn' : 'bad'],
-      ['Stalls', `${t.stats.stalls} · ${((t.stats.stallMs + ongoing) / 1000).toFixed(1)}s total`, t.stallFlagged(now) ? 'bad' : ''],
-      ['Last stall', ongoing ? 'Now' : t.stats.lastStallAt ? `${fmtDuration(now - t.stats.lastStallAt)} ago` : 'None',
+      ['Rebuffering · this PC', `${t.stats.stalls} times · ${((t.stats.stallMs + ongoing) / 1000).toFixed(1)}s stopped`, t.stallFlagged(now) ? 'bad' : ''],
+      ['Last rebuffer', ongoing ? 'Now' : t.stats.lastStallAt ? `${fmtDuration(now - t.stats.lastStallAt)} ago` : 'None',
         t.stallFlagged(now) ? 'bad' : ''],
-      ['Stall rate', hoursOnWall > 0.05 ? `${(t.stats.stalls / hoursOnWall).toFixed(1)} per hour` : null],
-      ['Smooth catch-ups', `${t.stats.catchups} at ${CATCHUP_RATE}×`],
-      ['Jumps to live', String(t.stats.resyncs)],
+      ['Rebuffers per hour', hoursOnWall > 0.05 ? (t.stats.stalls / hoursOnWall).toFixed(1) : null],
+      ['Sync corrections', String(t.stats.syncs)],
+      ['Build-up released', `${t.stats.catchups} catch-ups at ${CATCHUP_RATE}× · ${t.stats.resyncs} jumps`],
       ['Live edge moved', `${t.stats.rebaselines}×`],
       ['Refreshes', String(t.stats.reloads)],
       ['Next refresh', Number.isFinite(t.nextReloadAt) ? `in ${fmtCountdown(t.nextReloadAt - now)}` : 'Off'],
@@ -1493,11 +1881,27 @@
     const levels = (t.ready && t.player?.getAvailableQualityLevels?.()) || [];
     const best = levels.find((q) => q in QUALITY);
     const stalledFeeds = new Set(wall.stallLog.map((e) => e.id)).size;
+    const m = t.meterNow(now);
+    const rate = t.bitrate(now);
+    const head = t.headroom(now);
+    const dropPct = m?.framesTotal ? (m.framesDropped / m.framesTotal) * 100 : null;
     fillKv($('#fs-network'), [
-      ['Streaming now', t.quality ? QUALITY[t.quality].label : null],
+      ['Streaming now', t.qualityLabel(now), '', m?.height ? 'Measured' : ''],
+      ['Bitrate', t.mounted && !t.error ? `${rate.mbps.toFixed(1)} Mbps` : null, head != null && head < HEADROOM_LOW ? 'bad' : '',
+        rate.measured ? 'Measured' : 'Estimated'],
+      ['Receiving', m?.receivedMbps != null ? `${m.receivedMbps.toFixed(1)} Mbps over the last 30 s` : null, '', m ? 'Measured' : 'N·A'],
+      ['Connection speed', m?.connectionMbps != null
+        ? `${m.connectionMbps.toFixed(1)} Mbps${head != null ? ` · ${head.toFixed(1)}× the bitrate` : ''}` : null,
+      head == null ? '' : head < HEADROOM_LOW ? 'bad' : head < 2 ? 'warn' : 'ok', m ? 'Measured' : 'N·A'],
+      ['Latency mode', m?.latencyMode ? LATENCY_MODE_TEXT[m.latencyMode] : m?.latencyModeText || null, m?.latencyMode === 'normal' ? 'warn' : ''],
+      ['Dropped frames', dropPct == null ? null : `${fmtInt(m.framesDropped)} of ${fmtInt(m.framesTotal)} (${dropPct.toFixed(1)}%)`,
+        dropPct == null ? '' : dropPct >= 1 ? 'bad' : dropPct > 0.1 ? 'warn' : ''],
+      ['Formats', m?.codecs || null],
+      ['Feed Meter', m ? `Reporting · extension ${meterSeen.version || ''}`.trim()
+        : meterActive() ? 'Installed, no report from this player yet' : 'Not installed in this browser: bitrate is estimated',
+      m ? 'ok' : 'warn'],
       ['Best the source offers', best ? QUALITY[best].label : null],
       ['Render target', `${QUALITY[t.targetQuality()].label} · ${t.boosted ? (t.stream.priority ? 'priority boost' : 'on screen') : 'tile size'}`],
-      ['Bitrate', t.mounted && !t.error ? `${t.estMbps().toFixed(1)} Mbps` : null, '', 'Estimated'],
       ['Priority', !t.stream.priority ? 'Off' : t.boosted ? 'Boosted' : `Held · ${t.heldReason || 'waiting'}`,
         t.stream.priority && !t.boosted ? 'warn' : ''],
       ['Embed host', host],
@@ -1506,6 +1910,22 @@
         : Number.isFinite(wall.boostCap) ? `Recovering · ${wall.boostCap} boosts allowed` : 'Calm',
       wall.congested ? 'bad' : Number.isFinite(wall.boostCap) ? 'warn' : 'ok'],
     ]);
+
+    const ing = ingestInfo(t.stream.source.id);
+    const iv = ing.v;
+    const SEVERITY = { error: ['YouTube error', 'bad'], warning: ['YouTube warning', 'warn'], info: ['YouTube note', ''] };
+    fillKv($('#fs-ingest'), [
+      ['Health', ing.text, ing.tone, iv?.health ? 'Measured' : 'N·A'],
+      ['Stream status', iv?.streamStatus || null],
+      ['Broadcast', iv?.broadcast || null],
+      ['Resolution', iv?.resolution || null],
+      ['Frame rate', iv?.frameRate || null],
+      ['Ingestion', iv?.ingestion ? iv.ingestion.toUpperCase() : null],
+      ['Health updated', iv?.healthAt ? `${fmtDuration(Math.max(0, now - iv.healthAt))} ago` : null],
+      ...(iv?.issues || []).map((x) => [...(SEVERITY[x.severity] || ['YouTube note', '']).slice(0, 1), x.description || x.reason,
+        (SEVERITY[x.severity] || [])[1] || '']),
+    ]);
+    setText($('#fs-ingest-hint'), ing.detail);
 
     fillKv($('#fs-stream'), [
       ['Title', data.title || null],
@@ -1528,7 +1948,7 @@
     const ytEntry = ytStats.get(id);
     const yt = ytEntry?.missing ? null : ytEntry;
     const a = yt?.analysis || {};
-    const hasKey = !!settings.ytApiKey.trim();
+    const hasKey = hasYtKey();
     $('#fs-key-form').hidden = hasKey;
     $('#fs-viewers-fig').hidden = !hasKey;
     setText($('#fs-aud-tag'), hasKey && yt ? 'Measured' : 'N·A');
@@ -1572,7 +1992,7 @@
   async function loadViewerHistory(tile) {
     const id = tile.stream.source.id;
     try {
-      const res = await fetch(`/api/youtube/history?id=${encodeURIComponent(id)}`);
+      const res = await api(`/api/youtube/history?id=${encodeURIComponent(id)}`);
       if (!res.ok) return;
       viewerSeries = { id, series: (await res.json()).series || [] };
       if (inspected === tile) renderFeedSheet();
@@ -1589,8 +2009,15 @@
     ytState = state;
     ytChecking = false;
     backendYoutube = true;
+    if (state.key) {
+      const was = server.ytKey;
+      server.ytKey = state.key; // another window may have saved or removed the key
+      if (was.set !== state.key.set || was.last4 !== state.key.last4) syncSettingInputs();
+    }
     ytStats.clear();
     for (const [id, v] of Object.entries(state.videos || {})) ytStats.set(id, v);
+    ingestState = state.ingest || null;
+    renderIngestSettings();
     ytStatsAt = state.updatedAt || 0;
     const err = state.status === 'error' ? state.error : '';
     if (err && err !== ytStatsError) logEvent(null, `YouTube Data API: ${err}`, 'warn');
@@ -1603,18 +2030,52 @@
   }
 
   // Saved from Settings (Save key / Enter) or the Stats sheet. An empty key turns stats off.
-  function saveYtKey(raw) {
-    settings.ytApiKey = String(raw || '').trim();
-    store.save(); // hands the key to the backend, which checks it with YouTube within seconds
-    applySetting('ytApiKey');
-    if (backendYoutube !== true) probeYouTubeBackend();
+  // The key goes to the server, which keeps it and checks it with YouTube within seconds;
+  // it is never stored in this page or the wall.
+  async function saveYtKey(raw) {
+    const key = String(raw || '').trim();
+    ytKeyError = '';
+    try {
+      const res = await api('/api/youtube/key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
+        body: JSON.stringify({ key }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (body.ytKey) server.ytKey = body.ytKey;
+      if (!res.ok) {
+        ytKeyError = res.status === 404
+          ? 'The running backend is older than this page: close the black "IXG Wall backend" window, then start the wall again.'
+          : body.error || `Could not save the key (HTTP ${res.status}).`;
+      }
+    } catch {
+      ytKeyError = 'Backend offline: the key could not be saved.';
+    }
+    if (!ytKeyError) {
+      $('#yt-key-input').value = '';
+      $('#fs-key').value = '';
+    }
+    onYtKeyChanged();
+    return !ytKeyError;
+  }
+
+  function onYtKeyChanged() {
+    syncSettingInputs();
+    ytStats.clear();
+    ytStatsError = '';
+    ytChecking = hasYtKey() && !ytKeyError;
+    renderYtStatus();
+    updateSummary();
+    renderFeedSheet();
+    const now = Date.now();
+    for (const t of tiles.values()) t.renderSide(now);
   }
 
   // Does the running backend poll YouTube? One started before that existed answers 404,
   // and would otherwise leave the key on "Checking…" forever.
   async function probeYouTubeBackend() {
     try {
-      const res = await fetch('/api/youtube', { cache: 'no-store' });
+      const res = await api('/api/youtube', { cache: 'no-store' });
       backendYoutube = res.ok;
       if (res.ok && !ytState) applyYouTube(await res.json());
     } catch {
@@ -1626,10 +2087,11 @@
   // The key's state under the input in Settings: working, checking, or exactly what's wrong.
   function renderYtStatus() {
     const $s = $('#yt-status');
-    const hasKey = !!settings.ytApiKey.trim();
+    const hasKey = hasYtKey();
     let text;
     let tone = '';
-    if (!hasKey) text = 'No key: audience numbers are off.';
+    if (ytKeyError) [text, tone] = [ytKeyError, 'bad'];
+    else if (!hasKey) text = 'No key: audience numbers are off.';
     else if (backendYoutube === false) {
       [text, tone] = ['Key saved, but the running backend is older than YouTube support. Close the black "IXG Wall backend" window, then start the wall again (Start IXG Wall.cmd or the exe).', 'bad'];
     } else if (!backend.connected) [text, tone] = ['Backend offline: the backend checks the key and polls YouTube.', 'warn'];
@@ -1685,6 +2147,318 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Channel sign-in: how each feed's encoder stream arrives at YouTube (health, resolution,
+  // frame rate, YouTube's warnings). The backend holds the Google sign-in and polls it.
+  // ---------------------------------------------------------------------------
+  let ingestState = null;
+  let ingestError = '';          // why the last settings action failed
+  let ingestEditingClient = false;
+  const INGEST_HEALTH = {
+    good: ['Good', 'ok'],
+    ok: ['OK', 'warn'],          // YouTube: usable, with minor problems
+    bad: ['Bad', 'bad'],
+    noData: ['No data', 'bad'],  // nothing arriving from the encoder
+    revoked: ['Revoked', 'bad'],
+  };
+
+  // { text, tone, detail, v } for one feed's ingest, or why there's nothing to show.
+  function ingestInfo(id) {
+    const s = ingestState;
+    if (!s?.signedIn) return { text: '—', tone: '', detail: 'Sign in with the channel in Settings → YouTube API to see how the encoder stream arrives at YouTube', v: null };
+    const v = s.videos?.[id];
+    if (!v) return { text: '—', tone: '', detail: s.status === 'error' ? `Channel sign-in: ${s.error}` : 'Waiting for YouTube…', v: null };
+    if (!v.owned) return { text: 'Not this channel', tone: '', detail: `${s.channel?.title || 'The signed-in channel'} doesn't own this broadcast, so YouTube won't share its ingest`, v };
+    if (!v.streamId) return { text: 'No stream bound', tone: 'warn', detail: 'This broadcast has no encoder stream attached in YouTube Studio', v };
+    // An ended broadcast or an idle stream has no data by design: not an alarm.
+    if (v.broadcast === 'complete' || v.streamStatus === 'inactive') {
+      return { text: v.broadcast === 'complete' ? 'Ended' : 'Inactive', tone: '', detail: 'The encoder isn\'t sending to this stream', v };
+    }
+    const [word, tone] = INGEST_HEALTH[v.health] || [v.streamStatus || '—', ''];
+    const format = [v.resolution, v.frameRate].filter((x) => x && x !== 'variable').join(' ');
+    const issues = (v.issues || []).map((x) => x.description || x.reason).filter(Boolean);
+    return {
+      text: `${word}${format ? ` · ${format}` : ''}`,
+      tone,
+      detail: issues.length ? `YouTube reports: ${issues.join(' · ')}` : 'YouTube reports no problems with this encoder stream',
+      v,
+    };
+  }
+
+  function renderIngestSettings() {
+    const s = ingestState;
+    const $s = $('#ingest-status');
+    const show = (sel, on) => { $(sel).hidden = !on; };
+    if (!s) {
+      setText($s, 'The running backend is older than channel sign-in: restart it.');
+      setTone($s, 'warn');
+      ['#ingest-client-form', '#ingest-signin', '#ingest-signout', '#ingest-client-change'].forEach((sel) => show(sel, false));
+      return;
+    }
+    const clientSet = !!s.client?.set;
+    const fromEnv = s.client?.source === 'env';
+    const editing = !fromEnv && (!clientSet || ingestEditingClient);
+    show('#ingest-client-form', editing);
+    show('#ingest-signin', clientSet && !s.signedIn && !editing);
+    show('#ingest-signout', s.signedIn);
+    show('#ingest-client-change', clientSet && !editing && !fromEnv);
+    setText($('#ingest-redirect'), s.redirectUri || '');
+    const ids = [...new Set([...tiles.values()].map((t) => t.stream.source.id))];
+    const owned = ids.filter((id) => s.videos?.[id]?.owned).length;
+    let text;
+    let tone = '';
+    if (ingestError) [text, tone] = [ingestError, 'bad'];
+    else if (!clientSet) text = 'Not set up: add the Google OAuth client below (one-time).';
+    else if (!s.signedIn) text = `Ready: sign in with the Google account that owns the channel.${s.error ? ` Last problem: ${s.error}` : ''}`;
+    else if (s.status === 'error') [text, tone] = [s.error, 'bad'];
+    else if (s.status !== 'ok') text = `Signed in as ${s.channel?.title} · checking the feeds…`;
+    else {
+      text = `Signed in as ${s.channel?.title} · ingest health for ${owned} of ${ids.length} feeds · updated ${fmtDuration(Date.now() - s.updatedAt)} ago`;
+      tone = owned ? 'ok' : 'warn';
+      if (!owned && ids.length) text += ' · none of the wall\'s feeds belong to this channel';
+    }
+    setText($s, text);
+    setTone($s, tone);
+  }
+
+  async function ingestAction(url, body) {
+    ingestError = '';
+    try {
+      const res = await api(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) ingestError = res.status === 404 ? 'The running backend is older than channel sign-in: restart it.' : data.error || `HTTP ${res.status}`;
+      else if (data.ingest) ingestState = data.ingest;
+    } catch {
+      ingestError = 'Backend offline.';
+    }
+    renderIngestSettings();
+    return !ingestError;
+  }
+
+  $('#ingest-client-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const ok = await ingestAction('/api/youtube/oauth/client', {
+      clientId: $('#ingest-client-id').value.trim(),
+      clientSecret: $('#ingest-client-secret').value.trim(),
+    });
+    if (ok) {
+      ingestEditingClient = false;
+      $('#ingest-client-secret').value = '';
+      renderIngestSettings();
+    }
+  });
+  $('#ingest-client-change').addEventListener('click', () => {
+    ingestEditingClient = true;
+    $('#ingest-client-id').value = ingestState?.client?.clientId || '';
+    renderIngestSettings();
+  });
+  // Google's sign-in runs in a popup so the wall keeps playing; its last page tells us it's done.
+  $('#ingest-signin').addEventListener('click', () => {
+    ingestError = '';
+    const popup = window.open('/api/youtube/oauth/start', 'ixg-oauth', 'popup,width=520,height=720');
+    if (!popup) {
+      ingestError = 'The browser blocked the sign-in window: allow pop-ups for this page and try again.';
+      renderIngestSettings();
+    }
+  });
+  $('#ingest-signout').addEventListener('click', async () => {
+    const ok = await ask({
+      title: `Sign out ${ingestState?.channel?.title || 'the channel'}?`,
+      body: 'Ingest health stops for every window, and the wall\'s access is withdrawn from the Google account.',
+      confirm: 'Sign out',
+      variant: 'destructive',
+    });
+    if (ok) ingestAction('/api/youtube/oauth/signout');
+  });
+  window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin || e.data?.type !== 'ixg-oauth-done') return;
+    probeYouTubeBackend(); // brings the new sign-in state
+  });
+
+  // ---------------------------------------------------------------------------
+  // IXG Wall Feed Meter: the Chrome extension in extension/ reports from inside each player
+  // every 2 s (see extension/meter.js). Reports are only taken from the tile's own player
+  // frame, and every field is checked, since it comes from another site's frame.
+  // ---------------------------------------------------------------------------
+  const meterSeen = { at: 0, version: null };
+  const finite = (v, max) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
+  const shortText = (v) => (typeof v === 'string' ? v.slice(0, 120) : null);
+
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || d.type !== 'ixg-meter' || d.v !== 1) return;
+    for (const t of tiles.values()) {
+      if (e.source !== t.frame.querySelector('iframe')?.contentWindow || e.origin !== t.host) continue;
+      if (d.videoId && d.videoId !== t.stream.source.id) return; // a report from before a link change
+      t.meter = {
+        at: Date.now(),
+        bitrateMbps: finite(d.bitrateMbps, 1000),
+        receivedMbps: finite(d.receivedMbps, 10000),
+        connectionMbps: finite(d.connectionMbps, 100000),
+        bufferS: finite(d.bufferS, 3600),
+        width: finite(d.width, 10000),
+        height: finite(d.height, 10000),
+        fps: finite(d.fps, 240),
+        videoFormat: shortText(d.videoFormat),
+        audioFormat: shortText(d.audioFormat),
+        codecs: shortText(d.codecs),
+        latencyMode: ['normal', 'low', 'ultra-low'].includes(d.latencyMode) ? d.latencyMode : null,
+        latencyModeText: shortText(d.latencyModeText),
+        framesTotal: finite(d.framesTotal, 1e12),
+        framesDropped: finite(d.framesDropped, 1e12),
+      };
+      meterSeen.at = Date.now();
+      meterSeen.version = shortText(d.meter);
+      return;
+    }
+  });
+
+  const meterActive = () => meterInstall.installed || Date.now() - meterSeen.at < 15000;
+
+  // ---- Install check: before feeds start, make sure this browser has the Feed Meter ----
+  // The extension's manifest is web-accessible under a fixed ID (its key is in the manifest),
+  // so a page can see whether it's installed. Browsers only install extensions from their
+  // store, by IT policy, or by hand in developer mode, so the prompt walks through that,
+  // checks every few seconds, and lets the wall continue the moment the extension appears.
+  const METER_SNOOZE_KEY = 'ixg-wall:meter-prompt-snoozed-until';
+  const meterInstall = { installed: false, version: null };
+  const isEdge = () => /Edg\//.test(navigator.userAgent);
+  const isChromium = () => !!navigator.userAgentData?.brands?.some((b) => /Chromium|Google Chrome|Microsoft Edge/.test(b.brand))
+    || /Chrome\/|Edg\//.test(navigator.userAgent);
+  function newerVersion(a, b) {
+    const pa = String(a).split('.').map(Number);
+    const pb = String(b).split('.').map(Number);
+    for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+    return false;
+  }
+
+  async function detectMeter() {
+    const ids = server.extension?.ids || [];
+    if (!ids.length || !isChromium()) return null;
+    for (const id of ids) {
+      try {
+        const res = await fetch(`chrome-extension://${id}/manifest.json`, { cache: 'no-store', signal: AbortSignal.timeout(1500) });
+        const manifest = await res.json();
+        return { id, version: manifest.version || null };
+      } catch {
+        // not installed under this ID
+      }
+    }
+    return null;
+  }
+
+  function meterSnoozed() {
+    try {
+      return Number(localStorage.getItem(METER_SNOOZE_KEY)) > Date.now();
+    } catch {
+      return false;
+    }
+  }
+
+  function onMeterFound(found) {
+    meterInstall.installed = true;
+    meterInstall.version = found.version;
+    meterSeen.version = meterSeen.version || found.version;
+    const latest = server.extension?.version;
+    if (latest && found.version && newerVersion(latest, found.version)) {
+      const how = document.createElement('button');
+      how.className = 'btn btn-outline btn-xs';
+      how.textContent = 'How to update';
+      how.addEventListener('click', () => showMeterDialog({ update: true, installed: found.version }));
+      $banner.replaceChildren(`This browser has Feed Meter ${found.version}; the wall now ships ${latest}. `, how);
+      $banner.hidden = false;
+    }
+  }
+
+  // Resolves when the wall may start its feeds.
+  async function ensureFeedMeter() {
+    if (!server.extension || location.protocol === 'file:') return; // an older backend ships no extension
+    const found = await detectMeter();
+    if (found) return onMeterFound(found);
+    if (meterSnoozed()) return;
+    await showMeterDialog();
+  }
+
+  function showMeterDialog({ update = false, installed = null } = {}) {
+    const $d = $('#meter-dialog');
+    if ($d.open) return Promise.resolve('open');
+    const ext = server.extension;
+    const supported = isChromium();
+    const pageUrl = isEdge() ? 'edge://extensions' : 'chrome://extensions';
+    setText($('#meter-title'), update ? 'Update the IXG Wall Feed Meter' : supported ? 'Install the IXG Wall Feed Meter' : 'The Feed Meter needs Chrome or Edge');
+    setText($('#meter-why'), update
+      ? `This browser has version ${installed}; the wall ships ${ext.version}. Download the new one, replace the folder you loaded before, then press the reload arrow on the extension's card in ${pageUrl}.`
+      : supported
+        ? 'This browser extension measures every feed from inside its player: real bitrate, data received, connection speed, latency mode and dropped frames. Without it the wall\'s bandwidth numbers are estimates. It takes a minute, once per browser.'
+        : 'This browser can show the wall, but it can\'t run the extension that measures each feed, so bandwidth numbers will be estimates. Open the wall in Chrome or Edge to measure them.');
+    $('#meter-store').hidden = !supported || update || !ext.storeUrl;
+    if (ext.storeUrl) $('#meter-store-link').href = ext.storeUrl;
+    $('#meter-steps').hidden = !supported;
+    $('#meter-download').href = ext.download;
+    setText($('#meter-ext-url'), pageUrl);
+    setText($('#meter-copy'), 'Copy address');
+    $('#meter-check').hidden = !supported;
+    $('#meter-snooze-row').hidden = update;
+    setText($('#meter-skip'), update ? 'Later' : 'Continue without it');
+    setText($('#meter-status'), supported ? 'Waiting for the extension · checking every few seconds' : '');
+
+    return new Promise((resolve) => {
+      const off = new AbortController();
+      let timer = 0;
+      let checking = false;
+      const finish = (why) => {
+        clearInterval(timer);
+        off.abort();
+        if ($d.open) $d.close();
+        resolve(why);
+      };
+      const check = async () => {
+        if (checking) return;
+        checking = true;
+        const found = await detectMeter();
+        checking = false;
+        if (found && (!update || !newerVersion(ext.version, found.version))) {
+          onMeterFound(found);
+          if (update) $banner.hidden = true;
+          logEvent(null, `Feed Meter ${found.version} found in this browser`);
+          finish('found');
+        } else {
+          setText($('#meter-status'), found ? `Still version ${found.version} · checking every few seconds`
+            : 'Not found yet · checking every few seconds');
+        }
+      };
+      const skip = () => {
+        if ($('#meter-snooze').checked) {
+          try { localStorage.setItem(METER_SNOOZE_KEY, String(Date.now() + 24 * 3600e3)); } catch { /* not remembered */ }
+        }
+        if (!update) logEvent(null, 'Continuing without the Feed Meter: bitrate is estimated', 'warn');
+        finish('skipped');
+      };
+      $('#meter-check').addEventListener('click', check, { signal: off.signal });
+      $('#meter-skip').addEventListener('click', skip, { signal: off.signal });
+      $d.addEventListener('cancel', (e) => { e.preventDefault(); skip(); }, { signal: off.signal }); // Escape
+      $('#meter-copy').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(pageUrl);
+          setText($('#meter-copy'), 'Copied');
+        } catch {
+          setText($('#meter-copy'), 'Select and copy it');
+        }
+      }, { signal: off.signal });
+      $d.showModal();
+      if (supported) timer = setInterval(check, 3000);
+    });
+  }
+  const LATENCY_MODE_TEXT = {
+    normal: 'Normal: YouTube\'s slowest mode; Low or Ultra-low cut the delay',
+    low: 'Low latency',
+    'ultra-low': 'Ultra-low latency',
+  };
+
   function connectBackend() {
     if (location.protocol === 'file:' || !window.EventSource) return;
     const source = new EventSource('/api/telemetry');
@@ -1714,15 +2488,24 @@
       reload.className = 'btn btn-outline btn-xs';
       reload.textContent = 'Reload wall';
       reload.addEventListener('click', () => location.reload());
-      $banner.replaceChildren('The wall was changed in another window. ', reload);
+      const switched = data.session && data.session.id !== session.id;
+      $banner.replaceChildren(switched
+        ? `Another window switched the wall to the session ${data.session.name}. `
+        : 'The wall was changed in another window. ', reload);
       $banner.hidden = false;
     });
     source.onerror = () => { // EventSource reconnects on its own
       backend.connected = false;
       updateSummary();
       renderPerf();
+      // ...but can't see why it was refused: a lapsed sign-in must go to the sign-in page.
+      if (server.auth && Date.now() - lastAuthProbe > 10000) {
+        lastAuthProbe = Date.now();
+        api('/api/config', { cache: 'no-store' }).catch(() => {});
+      }
     };
   }
+  let lastAuthProbe = 0;
 
   async function watchPressure() {
     if (!('PressureObserver' in window)) return;
@@ -1751,7 +2534,7 @@
   }
 
   async function wallBrowserAction(body) {
-    const res = await fetch('/api/wall-browser', {
+    const res = await api('/api/wall-browser', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
       body: JSON.stringify(body),
@@ -1767,6 +2550,25 @@
     const b = t?.browser;
     const pct = (v) => (v == null ? null : `${Math.round(v)}%`);
     const toneFor = (v, warn, bad) => (v == null ? '' : v >= bad ? 'bad' : v >= warn ? 'warn' : '');
+    const mounted = [...tiles.values()].filter((x) => x.mounted && !x.error);
+    const reporting = mounted.filter((x) => x.meterNow()).length;
+    const meterRow = ['Feed Meter extension', meterActive()
+      ? `Active${meterSeen.version ? ` · v${meterSeen.version}` : ''} · ${reporting} of ${mounted.length} feeds reporting`
+      : 'Not detected in this browser: per-feed bitrate is estimated. Install it from the extension folder (extension/README.md)',
+    meterActive() ? (reporting < mounted.length ? 'warn' : 'ok') : 'warn'];
+    // Hosted, the server isn't this computer: only what the browser itself can tell.
+    if (server.hosted) {
+      fillKv($('#perf-kv'), [
+        meterRow,
+        ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
+          perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
+        ['CPU pressure (browser)', cpuPressure || ('PressureObserver' in window ? 'Waiting' : 'Not available'),
+          cpuPressure === 'critical' ? 'bad' : cpuPressure === 'serious' ? 'warn' : ''],
+        ['Decoding in this window', decodeHere ? (decodeHere === 'hardware' ? 'Hardware (GPU)' : 'Software (CPU)') : null],
+        ['Server', backendFresh() ? 'Connected' : 'Offline: can\'t reach the wall server', backendFresh() ? '' : 'warn'],
+      ]);
+      return;
+    }
     fillKv($('#perf-kv'), [
       ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
         perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
@@ -1774,6 +2576,7 @@
       ['CPU pressure (browser)', cpuPressure || ('PressureObserver' in window ? 'Waiting' : 'Not available'),
         cpuPressure === 'critical' ? 'bad' : cpuPressure === 'serious' ? 'warn' : ''],
       ['Memory', t ? `${pct(t.memUsedPct)} of ${t.memTotalGB} GB` : null, toneFor(t?.memUsedPct, 85, PERF_BUSY_MEM)],
+      meterRow,
       ['Download now', t?.rxMbps != null ? `${t.rxMbps.toFixed(1)} Mbps` : null],
       ['Upload now', t?.txMbps != null ? `${t.txMbps.toFixed(1)} Mbps` : null],
       ['Network adapter', t?.nic || null],
@@ -1807,6 +2610,34 @@
     // A queued feed moves up (or back) in line with its new priority.
     if (tile.queued) requestMount(tile);
     tile.render();
+  }
+
+  // Swap a feed's YouTube link in place, e.g. the next day's stream for the same slot.
+  // An unusable link reopens the dialog with the reason, keeping what was typed.
+  async function changeLink(tile) {
+    let value = `https://youtube.com/live/${tile.stream.source.id}`;
+    let problem = '';
+    for (;;) {
+      const raw = await ask({
+        title: `Change link · ${tile.stream.label}`,
+        body: problem
+          ? `Can't use that link: ${problem}`
+          : 'Paste the new YouTube live URL or video ID. The feed keeps its place on the wall, its label and priority; its stats start over.',
+        confirm: 'Change link',
+        input: { value, placeholder: 'Paste a YouTube live URL or video ID', label: 'YouTube live URL or video ID' },
+      });
+      if (!raw || !tiles.has(tile.stream.id)) return;
+      value = raw;
+      const source = CHANNEL_LINK.test(raw) ? null : parseSource(raw);
+      const other = source && [...tiles.values()].find((t) => t !== tile && t.stream.source.id === source.id);
+      if (CHANNEL_LINK.test(raw)) problem = 'it is a channel link. Open the live stream and copy its own URL.';
+      else if (!source) problem = 'it is not a YouTube video URL or 11-character video ID.';
+      else if (other) problem = `that video is already on the wall as ${other.stream.label}.`;
+      else {
+        if (source.id !== tile.stream.source.id) tile.changeSource(source);
+        return;
+      }
+    }
   }
 
   async function removeTile(tile) {
@@ -1906,6 +2737,7 @@
 
   function updateLayout() {
     const n = tiles.size;
+    $('#clear-wall').disabled = n === 0;
     document.body.style.setProperty('--wall-top', `${Math.round($grid.getBoundingClientRect().top)}px`);
     document.body.style.setProperty('--sheet-top', `${document.querySelector('.topbar').offsetHeight}px`);
     $empty.hidden = n > 0;
@@ -1974,32 +2806,72 @@
   function updateSummary() {
     const list = [...tiles.values()];
     const playing = list.filter((t) => t.ready && t.ps === PS.PLAYING);
-    const issues = list.filter((t) => t.error || t.ps === PS.BUFFERING || t.ps === PS.PAUSED).length;
+    syncWallAlerts();
     const lags = playing.map((t) => t.latency).filter((v) => v != null);
     $readout.playing.textContent = `${playing.length}/${list.length}`;
     // Red when any feed is buffering or failed; amber only while feeds are still starting.
     $readout.playing.dataset.tone = list.some((t) => t.error || t.ps === PS.BUFFERING) ? 'bad'
       : playing.length < list.length ? 'warn' : '';
     $readout.latency.textContent = lags.length ? `${median(lags).toFixed(1)}s` : '—';
-    $readout.issues.textContent = String(issues);
-    // Errors and buffering are red; only paused feeds (which resume themselves) are amber.
-    $readout.issues.dataset.tone = list.some((t) => t.error || t.ps === PS.BUFFERING) ? 'bad' : issues ? 'warn' : '';
-    const load = list.reduce((sum, t) => sum + t.estMbps(), 0);
+    $readout.latency.parentElement.title = 'Delay: median across playing live feeds, from YouTube\'s stamp on a frame to this screen (edge delay on YouTube\'s side + behind edge on this PC)';
+
+    // Sync: how far apart the synced feeds are right now.
+    const $sync = $('#r-sync');
+    const members = [...sync.members];
+    const inSync = members.filter((t) => Math.abs(t.syncOffset() ?? Infinity) <= SYNC_TOLERANCE_S).length;
+    if (!settings.syncFeeds) {
+      setText($sync, 'Off');
+      setTone($sync, '');
+    } else if (sync.target == null) {
+      setText($sync, '—');
+      setTone($sync, '');
+    } else {
+      setText($sync, `${inSync}/${members.length} · ${sync.spread.toFixed(1)}s`);
+      setTone($sync, sync.spread <= SYNC_TOLERANCE_S * 2 ? 'ok' : sync.spread <= 2 ? 'warn' : 'bad');
+    }
+    const excluded = [...sync.excluded].map(([t, why]) => `${t.stream.label}: ${why}`);
+    $sync.parentElement.title = !settings.syncFeeds ? 'Sync is off (Settings → Sync)'
+      : sync.target == null ? 'Sync starts once two live feeds have found their edge delay'
+        : `${inSync} of ${members.length} feeds within ±${SYNC_TOLERANCE_S}s of the wall's ${sync.target.toFixed(1)}s delay; `
+          + `the synced feeds are ${sync.spread.toFixed(1)}s apart. The delay is set by ${sync.setBy?.stream.label} `
+          + `(edge delay ${sync.setBy?.baseline.toFixed(1)}s + ${settings.syncMarginSec}s margin).`
+          + (excluded.length ? ` Not synced: ${excluded.join(' · ')}` : '');
+    // Bandwidth, per feed and for the wall. With the Feed Meter extension every number is
+    // measured inside the players; without it "need" falls back to typical bitrates.
+    const now = Date.now();
+    const active = list.filter((t) => t.mounted && !t.error);
+    const rates = active.map((t) => t.bitrate(now));
+    const need = rates.reduce((sum, r) => sum + r.mbps, 0);
+    const measuredNeed = rates.filter((r) => r.measured).length;
     const budget = settings.bandwidthMbps;
-    setText($readout.load, list.length ? `${load.toFixed(1)}${budget ? `/${budget}` : ''} Mbps` : '—');
-    $readout.load.dataset.tone = budget && load > budget ? 'bad'
-      : wall.congested || Number.isFinite(wall.boostCap) || (budget && load > budget * BUDGET_HEADROOM) ? 'warn' : '';
+    setText($readout.load, active.length ? `${need.toFixed(1)}${budget ? `/${budget}` : ''} Mbps` : '—');
+    setText($('#r-load-tag'), !active.length || measuredNeed === 0 ? 'Estimated' : measuredNeed === active.length ? 'Measured' : 'Partly measured');
+    $readout.load.dataset.tone = budget && need > budget ? 'bad'
+      : wall.congested || Number.isFinite(wall.boostCap) || (budget && need > budget * BUDGET_HEADROOM) ? 'warn' : '';
     $readout.load.parentElement.title = wall.congested ? 'Several feeds are stalling together: the link looks congested'
       : Number.isFinite(wall.boostCap) ? `Priority boosts limited to ${wall.boostCap} until the link stays calm`
-        : 'What the feeds should be pulling: typical live bitrates for each feed\'s current quality';
+        : `Bitrate of every feed added up${measuredNeed < active.length ? `: ${measuredNeed} of ${active.length} measured by the Feed Meter, the rest typical for their quality` : ', measured by the Feed Meter'}${budget ? ` · against your ${budget} Mbps link` : ''}`;
 
-    // Measured by the backend: the laptop's real download right now, and its CPU.
+    const metered = active.map((t) => [t, t.meterNow(now)]).filter(([, m]) => m?.receivedMbps != null);
+    const getting = metered.reduce((sum, [, m]) => sum + m.receivedMbps, 0);
+    const short = metered.filter(([t]) => (t.headroom(now) ?? Infinity) < HEADROOM_LOW).map(([t]) => t.stream.label);
+    setText($readout.getting, metered.length ? `${getting.toFixed(1)} Mbps` : '—');
+    setText($('#r-getting-tag'), metered.length ? 'Measured' : 'N·A');
+    $readout.getting.dataset.tone = short.length ? 'bad' : '';
+    $readout.getting.parentElement.title = !metered.length
+      ? 'Needs the IXG Wall Feed Meter extension in this browser (Settings → This computer)'
+      : `Video and audio actually received by ${metered.length} of ${active.length} feeds over the last 30 s`
+        + (short.length ? ` · connection can't keep up on: ${short.join(', ')}` : ' · every feed\'s connection is ahead of its bitrate');
+
+    // Measured by the backend: the laptop's whole download right now, and its CPU.
     const t = backendFresh() ? backend.latest : null;
     setText($readout.bwNow, t?.rxMbps != null ? `${t.rxMbps.toFixed(1)} Mbps` : '—');
     $readout.bwNow.dataset.tone = budget && t?.rxMbps > budget ? 'bad' : budget && t?.rxMbps > budget * BUDGET_HEADROOM ? 'warn' : '';
-    $readout.bwNow.parentElement.title = t
-      ? `Download right now on ${t.nic || 'the busiest adapter'} · whole laptop, measured by the backend`
-      : 'Backend offline: start the wall with npm run wall to measure real bandwidth';
+    const other = t?.rxMbps != null && metered.length === active.length && active.length ? Math.max(0, t.rxMbps - getting) : null;
+    $readout.bwNow.parentElement.title = !t
+      ? 'Backend offline: start the wall with npm run wall to measure the PC\'s download'
+      : `Whole PC download on ${t.nic || 'the busiest adapter'}, measured by the backend`
+        + (other != null ? ` · feeds ${getting.toFixed(1)} Mbps, everything else on this PC ${other.toFixed(1)} Mbps` : '');
     setText($readout.cpu, t?.cpu != null ? `${Math.round(t.cpu)}%` : '—');
     $readout.cpu.dataset.tone = perf.level === 'overloaded' ? 'bad' : perf.level === 'busy' || t?.cpu >= 75 ? 'warn' : '';
     $readout.cpu.parentElement.title = t
@@ -2007,7 +2879,7 @@
       : 'Backend offline';
     const viewerCounts = [...new Set(list.map((t) => t.stream.source.id))]
       .map((id) => ytStats.get(id)?.viewers).filter((v) => v != null);
-    $('#r-ccv-wrap').hidden = !settings.ytApiKey.trim() || !viewerCounts.length;
+    $('#r-ccv-wrap').hidden = !hasYtKey() || !viewerCounts.length;
     $('#r-ccv').textContent = viewerCounts.reduce((sum, v) => sum + Number(v), 0).toLocaleString('en-US');
     const total = ytState?.total;
     $('#r-ccv-wrap').title = total?.peak != null
@@ -2015,6 +2887,7 @@
       : 'Watching across all feeds, reported by YouTube';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
     $liveBadge.hidden = !playing.some((t) => t.isLive);
+    renderSessionChip();
   }
 
   function restartLoop() {
@@ -2023,6 +2896,7 @@
       const now = Date.now();
       wall.autoJumpsLeft = MAX_AUTO_JUMPS_PER_TICK;
       updateCongestion(now);
+      updateSync();
       updatePerf(now);
       allocate();
       pumpQueue();
@@ -2033,6 +2907,7 @@
           console.error(err);
         }
       }
+      measureSyncSpread(); // after this round's jumps, not before
       updateSummary();
       renderFeedSheet();
     }, settings.checkIntervalSec * 1000);
@@ -2087,6 +2962,40 @@
   // ---------------------------------------------------------------------------
   // UI wiring
   // ---------------------------------------------------------------------------
+  const viewTabs = [...document.querySelectorAll('.wall-tab')];
+  function showWallView(tab) {
+    const feeds = tab.id === 'feeds-tab';
+    for (const button of viewTabs) {
+      const selected = button === tab;
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    }
+    const panel = $('#feeds-panel');
+    panel.classList.toggle('is-inactive', !feeds);
+    panel.inert = !feeds;
+    panel.setAttribute('aria-hidden', String(!feeds));
+    $('#wall-stats-panel').hidden = feeds;
+    if (!feeds) {
+      closeFeedSheet();
+      syncWallAlerts();
+      renderLog();
+    }
+  }
+  viewTabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => showWallView(tab));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % viewTabs.length;
+      else if (event.key === 'ArrowLeft') next = (index + viewTabs.length - 1) % viewTabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = viewTabs.length - 1;
+      else return;
+      event.preventDefault();
+      showWallView(viewTabs[next]);
+      viewTabs[next].focus();
+    });
+  });
+
   function showFormError(msg) {
     $formError.textContent = msg;
     $formError.hidden = !msg;
@@ -2094,23 +3003,104 @@
     else $source.removeAttribute('aria-invalid');
   }
 
-  // ---- Add feeds: a popover that takes one URL or a whole list ----------------------
+  // ---- Add feeds: paste one link, a list, or a whole message ------------------------
+  // The popover reads the YouTube links out of whatever is pasted (a Slack or WhatsApp
+  // message, an email) and names each feed from the text beside its link. The preview lists
+  // what it found; names can be edited and feeds unticked before they go on the wall.
+  let addRows = [];           // { key, source, raw, label, state: new|dup|bad, why, include }
+  const addEdits = new Map(); // key -> { label, include } as the operator set them; survives re-reading
+  const addEdit = (key) => {
+    if (!addEdits.has(key)) addEdits.set(key, {});
+    return addEdits.get(key);
+  };
+
   function setAddPanel(open) {
     $addPanel.hidden = !open;
     $addToggle.setAttribute('aria-expanded', String(open));
     if (open) {
+      if (!$sessionPanel.hidden) setSessionPanel(false);
       showFormError('');
-      updateAddButton();
+      readAddInput();
       $source.focus();
     }
   }
 
-  const sourceTokens = () => $source.value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  function readAddInput() {
+    const onWall = new Map(streams.map((s) => [s.source.id, s.label]));
+    addRows = readMessage($source.value).map((f) => {
+      const key = f.source ? f.source.id : `raw:${f.raw}`;
+      const edit = addEdits.get(key) || {};
+      let state = 'new';
+      let why = '';
+      if (!f.source) {
+        state = 'bad';
+        why = f.problem === 'channel' ? 'Channel link: open the live stream and copy its own URL' : 'Not a YouTube video link';
+      } else if (onWall.has(f.source.id)) {
+        state = 'dup';
+        why = `Already on the wall as ${onWall.get(f.source.id)}`;
+      }
+      return { key, source: f.source, raw: f.raw, label: edit.label ?? f.label, state, why, include: state === 'new' && edit.include !== false };
+    });
+    renderAddPreview();
+  }
+
+  function addRowEl(r) {
+    const li = document.createElement('li');
+    li.className = 'add-row';
+    li.dataset.state = r.state;
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = r.include;
+    check.disabled = r.state !== 'new';
+    check.setAttribute('aria-label', `Add ${r.label || r.source?.id || r.raw}`);
+    check.addEventListener('change', () => {
+      r.include = check.checked;
+      addEdit(r.key).include = check.checked;
+      updateAddButton();
+    });
+    let name;
+    if (r.state === 'new') {
+      name = document.createElement('input');
+      name.className = 'input add-label';
+      name.value = r.label;
+      name.placeholder = 'Name from YouTube';
+      name.setAttribute('aria-label', `Name for ${r.source.id}`);
+      name.addEventListener('input', () => {
+        r.label = name.value;
+        addEdit(r.key).label = name.value;
+      });
+    } else {
+      name = document.createElement('span');
+      name.className = 'add-name';
+      name.textContent = r.label || '—';
+    }
+    const id = document.createElement('span');
+    id.className = 'add-id';
+    id.textContent = r.source ? r.source.id : r.raw.length > 32 ? `${r.raw.slice(0, 31)}…` : r.raw;
+    id.title = r.raw;
+    li.append(check, name, id);
+    if (r.why) {
+      const why = document.createElement('span');
+      why.className = 'add-why';
+      why.textContent = r.why;
+      li.append(why);
+    }
+    return li;
+  }
+
+  function renderAddPreview() {
+    const fresh = addRows.filter((r) => r.state === 'new').length;
+    const skipped = addRows.length - fresh;
+    $('#add-preview').hidden = !addRows.length;
+    setText($('#add-found'), `${fresh} new feed${fresh === 1 ? '' : 's'} found${skipped ? ` · ${skipped} skipped` : ''}`);
+    $('#add-list').replaceChildren(...addRows.map(addRowEl));
+    updateAddButton();
+  }
 
   function updateAddButton() {
-    const n = sourceTokens().length;
+    const n = addRows.filter((r) => r.include).length;
     $('#add-submit').textContent = n > 1 ? `Add ${n} feeds` : 'Add feed';
-    $label.disabled = n > 1;
+    $('#add-submit').disabled = !n;
   }
 
   $addToggle.addEventListener('click', () => setAddPanel($addPanel.hidden));
@@ -2121,44 +3111,34 @@
 
   $form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const tokens = sourceTokens();
-    const onWall = new Set(streams.map((s) => s.source.id));
-    const valid = [];
-    const rejected = [];
-    for (const raw of tokens) {
-      if (/youtube\.com\/(@|channel\/|c\/)|^@|^UC[\w-]{22}$/i.test(raw)) {
-        rejected.push([raw, 'channel link: open the live stream and copy its own URL']);
-        continue;
-      }
-      const source = parseSource(raw);
-      if (!source) rejected.push([raw, 'not a YouTube video URL or 11-character ID']);
-      else if (onWall.has(source.id) || valid.some((v) => v.id === source.id)) rejected.push([raw, 'already on the wall']);
-      else valid.push(source);
-    }
-    const label = valid.length === 1 ? $label.value.trim() : '';
-    for (const source of valid) {
-      const stream = { id: uid(), source, label: label || `Stream ${streams.length + 1}`, autoLabel: !label };
-      streams.push(stream);
-      const tile = addTile(stream);
-      logEvent(tile, `Added (${source.id})`);
-    }
-    if (valid.length) store.save(); // the backend polls YouTube for the new feeds within seconds
-    if (!rejected.length) {
-      $source.value = '';
-      $label.value = '';
-      setAddPanel(false);
+    readAddInput(); // the wall may have changed since the preview was drawn
+    const picked = addRows.filter((r) => r.include);
+    if (!picked.length) {
+      showFormError(addRows.length
+        ? 'Nothing new to add: every link is skipped or unticked.'
+        : 'No YouTube links found. Paste live URLs, video IDs, or a message that contains them.');
       return;
     }
-    // Keep only the lines that need fixing, and say why each one was skipped.
-    $source.value = rejected.map(([raw]) => raw).join('\n');
-    updateAddButton();
-    showFormError(`${valid.length ? `Added ${valid.length}. ` : ''}Skipped ${rejected.length}:\n`
-      + rejected.map(([raw, why]) => `${raw.length > 48 ? `${raw.slice(0, 45)}…` : raw} — ${why}`).join('\n'));
+    for (const r of picked) {
+      // A name from the message (or typed here) sticks; a blank one takes the YouTube title.
+      const label = r.label.trim();
+      const stream = {
+        id: uid(), source: r.source, label: label || `Stream ${streams.length + 1}`, autoLabel: !label, addedAt: new Date().toISOString(),
+      };
+      streams.push(stream);
+      const tile = addTile(stream);
+      logEvent(tile, `Added (${r.source.id})`);
+    }
+    store.save(); // the backend polls YouTube for the new feeds within seconds
+    $source.value = '';
+    addEdits.clear();
+    readAddInput();
+    setAddPanel(false);
   });
 
   $source.addEventListener('input', () => {
     if (!$formError.hidden) showFormError('');
-    updateAddButton();
+    readAddInput();
   });
   $source.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $form.requestSubmit();
@@ -2171,6 +3151,196 @@
   // The load queue staggers these, priority feeds first.
   $('#reload-all').addEventListener('click', () => {
     for (const t of tiles.values()) t.reload('manual, all');
+  });
+
+  $('#clear-wall').addEventListener('click', async () => {
+    if (!streams.length) return;
+    const ok = await ask({
+      title: 'Clear the entire wall?',
+      body: 'Every player stops and all feeds are removed from the saved wall. Paste new links to add feeds again. Your settings are kept.',
+      confirm: 'Clear wall',
+      variant: 'destructive',
+    });
+    if (!ok) return;
+    teardownTiles();
+    streams.length = 0;
+    store.saveLocal();
+    clearTimeout(store.pushTimer);
+    await pushWall();
+    logEvent(null, 'Cleared all feeds from the wall');
+    updateLayout();
+    updateSummary();
+    renderSession();
+  });
+
+  // Stops every player and takes every tile off the wall (the feeds' records are untouched).
+  function teardownTiles() {
+    closeFeedSheet();
+    loadQueue.length = 0;
+    for (const tile of tiles.values()) {
+      tile.unmount();
+      tileObserver.unobserve(tile.el);
+      viewObserver.unobserve(tile.el);
+      tile.el.remove();
+    }
+    tiles.clear();
+    solo = null;
+    wall.stallLog.length = 0;
+    wall.boostCap = Infinity;
+    wall.congested = false;
+  }
+
+  // ---- Sessions: each event's feeds kept apart ---------------------------------------
+  // Only the active session's feeds load. Starting a new session or opening a saved one puts
+  // the current feeds away in the saved list (an empty session isn't worth keeping).
+  const $sessionPanel = $('#session-panel');
+  const $sessionToggle = $('#session-toggle');
+  const feedCount = (n) => `${n} feed${n === 1 ? '' : 's'}`;
+  // "Sat, 4 Oct 2026, 15:42 → 18:10" (the end date only when it's another day).
+  function sessionSpan(s) {
+    if (!s.endedAt) return localStamp(s.startedAt);
+    const sameDay = new Date(s.startedAt).toDateString() === new Date(s.endedAt).toDateString();
+    return `${localStamp(s.startedAt)} → ${sameDay ? localStamp(s.endedAt, { timeOnly: true }) : localStamp(s.endedAt)}`;
+  }
+
+  function putAwayCurrent() {
+    if (!streams.length) return;
+    savedSessions.unshift({ ...session, endedAt: new Date().toISOString(), streams: streams.slice() });
+    savedSessions.splice(MAX_SAVED_SESSIONS);
+  }
+
+  function switchTo(next, feeds, message) {
+    putAwayCurrent();
+    teardownTiles();
+    session = next;
+    streams.splice(0, streams.length, ...feeds);
+    streams.forEach(addTile);
+    store.save();
+    logEvent(null, message);
+    updateLayout();
+    updateSummary();
+    renderSession();
+  }
+
+  async function startSession(name) {
+    if (streams.length) {
+      const ok = await ask({
+        title: `Start ${name}?`,
+        body: `${session.name} (${feedCount(streams.length)}) is saved to the session list and its players stop. The wall starts empty.`,
+        confirm: 'Start new session',
+      });
+      if (!ok) return false;
+    }
+    switchTo(newSession(name), [], `Started session ${name}`);
+    return true;
+  }
+
+  async function openSession(id) {
+    const s = savedSessions.find((x) => x.id === id);
+    if (!s) return;
+    const ok = await ask({
+      title: `Open ${s.name}?`,
+      body: `Loads its ${feedCount(s.streams.length)}.${streams.length ? ` ${session.name} (${feedCount(streams.length)}) is saved to the session list and its players stop.` : ''}`,
+      confirm: 'Open session',
+    });
+    if (!ok || !savedSessions.includes(s)) return;
+    savedSessions.splice(savedSessions.indexOf(s), 1);
+    switchTo({ id: s.id, name: s.name, startedAt: s.startedAt, timeZone: s.timeZone || null }, s.streams.filter(validStream), `Opened session ${s.name}`);
+    setSessionPanel(false);
+  }
+
+  async function deleteSession(id) {
+    const s = savedSessions.find((x) => x.id === id);
+    if (!s) return;
+    const ok = await ask({
+      title: `Delete ${s.name}?`,
+      body: `Its ${feedCount(s.streams.length)} are forgotten. This can't be undone.`,
+      confirm: 'Delete session',
+      variant: 'destructive',
+    });
+    if (!ok || !savedSessions.includes(s)) return;
+    savedSessions.splice(savedSessions.indexOf(s), 1);
+    store.save();
+    logEvent(null, `Deleted saved session ${s.name}`);
+    renderSession();
+  }
+
+  // The header button: cheap, so the summary refresh keeps it current.
+  function renderSessionChip() {
+    setText($('#session-name'), session.name);
+    setText($('#session-when'), localStamp(session.startedAt, { short: true }));
+    $sessionToggle.title = `Session: ${session.name} · started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} · ${savedSessions.length} saved`;
+    const title = `${session.name} · IXG Wall`;
+    if (document.title !== title) document.title = title;
+  }
+
+  function renderSession() {
+    renderSessionChip();
+    if ($sessionPanel.hidden) return;
+    if (document.activeElement !== $('#session-name-input')) $('#session-name-input').value = session.name;
+    setText($('#session-meta'), `Started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} on the wall`);
+    setText($('#session-saved-title'), savedSessions.length ? `Saved sessions · ${savedSessions.length}` : 'No saved sessions yet');
+    $('#session-list').replaceChildren(...savedSessions.map((s) => {
+      const li = document.createElement('li');
+      li.className = 'session-row';
+      const info = document.createElement('div');
+      info.className = 'session-info';
+      const name = document.createElement('span');
+      name.className = 'session-row-name';
+      name.textContent = s.name;
+      const meta = document.createElement('span');
+      meta.className = 'session-row-meta';
+      meta.textContent = `${sessionSpan(s)} · ${feedCount(s.streams.length)}`;
+      meta.title = `Started ${localStamp(s.startedAt, { zone: true })}${s.endedAt ? ` · saved ${localStamp(s.endedAt, { zone: true })}` : ''}`;
+      const labels = document.createElement('span');
+      labels.className = 'session-row-feeds';
+      labels.textContent = s.streams.slice(0, 4).map((x) => x.label).join(' · ') + (s.streams.length > 4 ? ' …' : '');
+      labels.title = s.streams.map((x) => `${x.label}${x.addedAt ? ` · added ${localStamp(x.addedAt, { short: true })}` : ''}`).join('\n');
+      info.append(name, meta, labels);
+      const open = document.createElement('button');
+      open.className = 'btn btn-outline btn-xs';
+      open.textContent = 'Open';
+      open.addEventListener('click', () => openSession(s.id));
+      const del = document.createElement('button');
+      del.className = 'btn btn-ghost btn-xs';
+      del.textContent = 'Delete';
+      del.setAttribute('aria-label', `Delete ${s.name}`);
+      del.addEventListener('click', () => deleteSession(s.id));
+      li.append(info, open, del);
+      return li;
+    }));
+  }
+
+  function setSessionPanel(open) {
+    $sessionPanel.hidden = !open;
+    $sessionToggle.setAttribute('aria-expanded', String(open));
+    if (open) {
+      setAddPanel(false);
+      renderSession();
+    }
+  }
+
+  $sessionToggle.addEventListener('click', () => setSessionPanel($sessionPanel.hidden));
+  document.addEventListener('pointerdown', (e) => {
+    if (!$sessionPanel.hidden && !$sessionPanel.contains(e.target) && !$sessionToggle.contains(e.target)
+      && !$dialog.contains(e.target)) setSessionPanel(false);
+  });
+  $('#session-rename-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('#session-name-input').value.trim().slice(0, 80);
+    if (!name || name === session.name) return;
+    logEvent(null, `Renamed session ${session.name} to ${name}`);
+    session.name = name;
+    store.save();
+    renderSession();
+  });
+  $('#session-new-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('#session-new-name').value.trim().slice(0, 80) || `Session ${localStamp(new Date().toISOString())}`;
+    if (await startSession(name)) {
+      $('#session-new-name').value = '';
+      setSessionPanel(false);
+    }
   });
 
   $('#wall-full').addEventListener('click', () => toggleFullscreen(document.documentElement));
@@ -2191,6 +3361,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || $dialog.open) return;
     if (!$addPanel.hidden) setAddPanel(false);
+    else if (!$sessionPanel.hidden) setSessionPanel(false);
     else if (inspected) closeFeedSheet();
     else if (!$drawer.hidden) setDrawer(false);
   });
@@ -2225,6 +3396,9 @@
     }
   });
   $('#fs-close').addEventListener('click', closeFeedSheet);
+  $('#fs-link').addEventListener('click', () => {
+    if (inspected) changeLink(inspected);
+  });
   $('#fs-nerds').addEventListener('click', () => {
     if (inspected) setFocus(inspected, !inspected.focused);
   });
@@ -2252,16 +3426,14 @@
       for (const t of tiles.values()) t.fit();
     }
     if (key === 'loadConcurrency') pumpQueue();
-    if (key === 'ytApiKey') {
-      // Saving the wall hands the key to the backend, which checks it within seconds.
-      settings.ytApiKey = String(settings.ytApiKey).trim();
-      syncSettingInputs();
-      ytStats.clear();
-      ytStatsError = '';
-      ytChecking = !!settings.ytApiKey;
-      renderYtStatus();
+    if (key === 'autoResync' || key === 'syncFeeds' || key === 'syncMarginSec') {
+      for (const t of tiles.values()) {
+        t.endNudge();
+        t.endCatchUp();
+      }
+      if (key !== 'autoResync') sync.target = null; // work the target out afresh with the new setting
+      updateSync();
       updateSummary();
-      renderFeedSheet();
     }
     if (key === 'bandwidthMbps') allocate();
     if (key === 'ytPollSec') renderYtStatus(); // saving the wall hands the new interval to the backend
@@ -2282,13 +3454,32 @@
       if (input.type === 'checkbox') input.checked = settings[key];
       else input.value = settings[key];
     });
-    $('#yt-key-input').value = settings.ytApiKey;
+    // The saved key never comes back from the server; the field only says whether there is one.
+    const k = server.ytKey || {};
+    const fromEnv = k.source === 'env';
+    $('#yt-key-input').disabled = fromEnv;
+    $('#yt-key-save').disabled = fromEnv;
+    $('#yt-key-input').placeholder = fromEnv ? 'Set on the server' : k.set ? `Saved key …${k.last4}` : 'Paste your key, e.g. AIzaSy…';
+    $('#yt-key-input').title = fromEnv ? 'The server sets this key (YOUTUBE_API_KEY), so it can\'t be changed here'
+      : k.set ? 'Paste a new key to replace the saved one; save an empty field to remove it' : '';
   }
 
   // YouTube API key: saved with the Save key button or Enter, not on every keystroke.
-  $('#yt-key-form').addEventListener('submit', (e) => {
+  // Saving an empty field removes the key, so that asks first.
+  $('#yt-key-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    saveYtKey($('#yt-key-input').value);
+    const raw = $('#yt-key-input').value.trim();
+    if (!raw) {
+      if (!hasYtKey()) return;
+      const ok = await ask({
+        title: 'Remove the YouTube API key?',
+        body: 'Audience numbers stop in every window until a key is saved again.',
+        confirm: 'Remove key',
+        variant: 'destructive',
+      });
+      if (!ok) return;
+    }
+    saveYtKey(raw);
   });
   $('#yt-key-show').addEventListener('click', (e) => {
     const input = $('#yt-key-input');
@@ -2323,24 +3514,33 @@
     $banner.hidden = false;
   }
 
+  $('#sign-out').addEventListener('click', async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST', headers: { 'X-IXG-Wall': '1' } });
+    } catch {
+      // the server is unreachable; the sign-in page will say so
+    }
+    location.assign('/login');
+  });
+
   const ytApi = loadYouTubeApi(); // fetch the player API while the wall loads
-  loadServerWall().then(() => {
+  loadServerConfig().then(loadServerWall).then(() => {
     syncSettingInputs();
     document.body.classList.toggle('hide-stats', !settings.showStats);
     streams.forEach(addTile);
     updateLayout();
     updateSummary();
+    renderSession();
     connectBackend(); // also brings the YouTube numbers, polled by the backend
     $('#fs-key-form').addEventListener('submit', (e) => {
       e.preventDefault();
       const key = $('#fs-key').value.trim();
-      if (!key) return;
-      $('#fs-key').value = '';
-      saveYtKey(key);
+      if (key) saveYtKey(key); // clears the field once the server has it
     });
     watchPressure();
     detectDecode();
-    return ytApi;
+    // Feeds start once the player API is loaded and the Feed Meter check is settled.
+    return Promise.all([ytApi, ensureFeedMeter()]);
   })
     .then(() => {
       ytReady = true;

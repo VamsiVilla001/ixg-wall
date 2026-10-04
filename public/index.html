@@ -15,43 +15,47 @@
       <span class="brand-name">IXG</span><span class="brand-mark" aria-hidden="true"></span>
       <span class="telemetry muted brand-sub">Wall</span>
     </div>
+    <button id="session-toggle" class="session-chip" aria-expanded="false" aria-controls="session-panel">
+      <span class="telemetry muted">Session</span>
+      <span class="session-name" id="session-name"></span>
+      <span class="session-when" id="session-when"></span>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+    </button>
     <span id="live-badge" class="live-badge" hidden><span class="live-dot"></span>Live</span>
 
-    <div class="metrics" aria-live="polite">
-      <div class="metric">
-        <span class="metric-label">Feeds</span>
-        <span class="metric-value" id="r-playing">0/0</span>
+    <div id="session-panel" class="popover session-panel" hidden aria-label="Sessions">
+      <form id="session-rename-form" class="session-block">
+        <label class="telemetry muted" for="session-name-input">Current session</label>
+        <div class="key-row">
+          <input class="input" id="session-name-input" maxlength="80" autocomplete="off" spellcheck="false">
+          <button type="submit" class="btn btn-outline btn-sm">Rename</button>
+        </div>
+        <p class="hint" id="session-meta"></p>
+      </form>
+      <form id="session-new-form" class="session-block">
+        <label class="telemetry muted" for="session-new-name">New session</label>
+        <div class="key-row">
+          <input class="input" id="session-new-name" maxlength="80" autocomplete="off" spellcheck="false" placeholder="e.g. BMSD Day 4">
+          <button type="submit" class="btn btn-accent btn-sm">Start new session</button>
+        </div>
+        <p class="hint">The current feeds are saved below and stop; the wall starts empty. Only the current session's feeds ever load.</p>
+      </form>
+      <div class="session-block">
+        <p class="telemetry muted" id="session-saved-title"></p>
+        <ol class="session-list" id="session-list"></ol>
       </div>
-      <div class="metric">
-        <span class="metric-label">Lag <span class="tag">Measured</span></span>
-        <span class="metric-value" id="r-latency">—</span>
-      </div>
-      <div class="metric" title="Download right now on this laptop's busiest network adapter, measured by the backend">
-        <span class="metric-label">Bandwidth now <span class="tag">Measured</span></span>
-        <span class="metric-value" id="r-bw-now">—</span>
-      </div>
-      <div class="metric" id="r-load-wrap">
-        <span class="metric-label">Bandwidth est. <span class="tag">Estimated</span></span>
-        <span class="metric-value" id="r-load">—</span>
-      </div>
-      <div class="metric metric-optional" title="Whole-laptop CPU, measured by the backend">
-        <span class="metric-label">CPU <span class="tag">Measured</span></span>
-        <span class="metric-value" id="r-cpu">—</span>
-      </div>
-      <div class="metric metric-optional" id="r-ccv-wrap" hidden>
-        <span class="metric-label">CCV <span class="tag">Measured</span></span>
-        <span class="metric-value" id="r-ccv">—</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">Alerts</span>
-        <span class="metric-value" id="r-issues">0</span>
-      </div>
+    </div>
+
+    <div class="wall-tabs" role="tablist" aria-label="Wall views">
+      <button id="feeds-tab" class="wall-tab" role="tab" aria-selected="true" aria-controls="feeds-panel" tabindex="0">Feeds <span class="tab-count" id="r-playing">0/0</span></button>
+      <button id="wall-stats-tab" class="wall-tab" role="tab" aria-selected="false" aria-controls="wall-stats-panel" tabindex="-1">Wall stats</button>
     </div>
 
     <div class="global-actions">
       <button id="add-toggle" class="btn btn-accent btn-sm" aria-expanded="false" aria-controls="add-panel">Add stream</button>
-      <button id="resync-all" class="btn btn-outline btn-sm" title="Jump every live player to its live edge">Jump live</button>
+      <button id="resync-all" class="btn btn-outline btn-sm" title="Release build-up on every live feed: jump to its live edge, or to the wall's sync delay when synced">Jump live</button>
       <button id="reload-all" class="btn btn-outline btn-sm" title="Hard-refresh every player, staggered (releases buffers and memory)">Refresh all</button>
+      <button id="clear-wall" class="btn btn-outline btn-sm" title="Stop and remove every feed from the saved wall" disabled>Clear wall</button>
       <button id="wall-full" class="btn btn-ghost btn-sm btn-square" title="Fullscreen the whole wall" aria-label="Fullscreen the whole wall">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
       </button>
@@ -61,13 +65,14 @@
     <div id="add-panel" class="popover" hidden>
       <form id="add-form" autocomplete="off">
         <label class="field-stack">
-          <span>YouTube live URLs or video IDs</span>
-          <textarea id="source" class="input textarea" rows="4" spellcheck="false" placeholder="e.g. youtube.com/live/jfKfPfyJRdk&#10;One per line to add several at once" required></textarea>
+          <span>YouTube links, or paste a whole message</span>
+          <textarea id="source" class="input textarea" rows="5" spellcheck="false" placeholder="Paste your current YouTube live URLs, one per line, or a Slack / WhatsApp message: links are picked out and each feed is named from the text beside it."></textarea>
         </label>
-        <label class="field-stack">
-          <span>Label <span class="muted">· single feed only, optional</span></span>
-          <input id="label" class="input" placeholder="e.g. Lobby 4 POV">
-        </label>
+        <div id="add-preview" class="add-preview" hidden>
+          <p class="telemetry muted" id="add-found"></p>
+          <ol id="add-list" class="add-list"></ol>
+          <p class="hint">Untick a feed to leave it out. A blank name takes the stream's YouTube title.</p>
+        </div>
         <p id="form-error" class="form-error" role="alert" hidden></p>
         <div class="popover-actions">
           <button type="button" id="add-cancel" class="btn btn-ghost btn-sm">Cancel</button>
@@ -79,16 +84,73 @@
   <div id="banner" class="notice notice-warn" role="status" hidden></div>
 
   <main class="wall">
+    <section id="feeds-panel" class="feeds-panel" role="tabpanel" aria-labelledby="feeds-tab">
     <div id="grid" class="grid"></div>
     <div id="empty" class="empty">
       <div class="empty-body">
         <p class="telemetry muted">0 feeds · wall idle</p>
-        <h1>No feeds on the wall</h1>
-        <p>Press Add stream and paste YouTube live URLs or 11-character video IDs, one per line. Feeds start muted and catch up to their live edge on their own.</p>
-        <p class="telemetry muted">Click a feed to hear it · double-click its label to rename</p>
+        <h1>No feeds in this session</h1>
+        <p>Press Add stream and paste YouTube live URLs, or a whole Slack or WhatsApp message with the links in it. Feeds start muted and catch up to their live edge on their own.</p>
+        <p class="telemetry muted">Click a feed to hear it · double-click its label to rename · earlier sessions are under Session</p>
       </div>
       <div class="halftone-fade-b empty-ground" aria-hidden="true"></div>
     </div>
+    </section>
+    <section id="wall-stats-panel" class="wall-stats-panel" role="tabpanel" aria-labelledby="wall-stats-tab" tabindex="0" hidden>
+      <div class="wall-stats-heading">
+        <h1>Wall stats</h1>
+        <p>Live readings across the current session.</p>
+      </div>
+      <section class="wall-alerts" aria-labelledby="wall-alerts-title">
+        <h2 id="wall-alerts-title">Alerts</h2>
+        <p class="telemetry muted alert-subtitle">Active now</p>
+        <p id="alerts-empty" class="hint" role="status">No active feed alerts.</p>
+        <ol id="active-alerts" class="log active-alerts" aria-label="Active feed alerts"></ol>
+        <div class="log-head">
+          <h3 class="telemetry muted">Message log</h3>
+          <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
+        </div>
+        <p class="hint">Newest first. Includes feed alerts, recoveries, and wall events from this browser session.</p>
+        <ol id="log" class="log wall-message-log" aria-label="Wall message log"></ol>
+      </section>
+      <div class="wall-stats-grid">
+      <div class="metric">
+        <span class="metric-label">Delay <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-latency">—</span>
+        <p class="metric-description">Median delay from YouTube's timestamp to this screen.</p>
+      </div>
+      <div class="metric" id="r-sync-wrap">
+        <span class="metric-label">Sync <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-sync">—</span>
+        <p class="metric-description">Feeds aligned with the wall's shared delay, and their spread.</p>
+      </div>
+      <div class="metric" id="r-load-wrap">
+        <span class="metric-label">Feeds need <span class="tag" id="r-load-tag">Estimated</span></span>
+        <span class="metric-value" id="r-load">—</span>
+        <p class="metric-description">Combined bitrate needed by the active feeds.</p>
+      </div>
+      <div class="metric" id="r-getting-wrap">
+        <span class="metric-label">Feeds getting <span class="tag" id="r-getting-tag">N·A</span></span>
+        <span class="metric-value" id="r-getting">—</span>
+        <p class="metric-description">Data received by the feeds, reported by Feed Meter.</p>
+      </div>
+      <div class="metric" data-laptop-only id="r-bw-now-wrap">
+        <span class="metric-label">PC download <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-bw-now">—</span>
+        <p class="metric-description">Download traffic across this computer, including other apps.</p>
+      </div>
+      <div class="metric" data-laptop-only title="Whole-laptop CPU, measured by the backend">
+        <span class="metric-label">CPU <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-cpu">—</span>
+        <p class="metric-description">Processor use across this computer.</p>
+      </div>
+      <div class="metric" id="r-ccv-wrap" hidden>
+        <span class="metric-label">CCV <span class="tag">Measured</span></span>
+        <span class="metric-value" id="r-ccv">—</span>
+        <p class="metric-description">Viewers watching across the wall's feeds.</p>
+      </div>
+      </div>
+    </section>
   </main>
 
   <aside id="drawer" class="sheet" hidden aria-label="Settings">
@@ -97,7 +159,10 @@
         <p class="telemetry muted">Settings · applies instantly</p>
         <h2>Wall behaviour</h2>
       </div>
-      <button id="drawer-close" class="btn btn-outline btn-sm">Close</button>
+      <div class="sheet-head-actions">
+        <button id="sign-out" class="btn btn-ghost btn-sm" hidden>Sign out</button>
+        <button id="drawer-close" class="btn btn-outline btn-sm">Close</button>
+      </div>
     </div>
     <!-- Everything under the header scrolls; the header (and Close) stays put -->
     <div class="sheet-body">
@@ -173,42 +238,99 @@
         </label>
         <p class="yt-status" id="yt-status" role="status"></p>
         <p class="hint">Adds live viewers, likes, views and comments to every feed, and a viewer history with peak, average, lowest and trend: open a feed's Stats for the full analytics. Also privacy, embedding, HD/SD and live chat, at no extra quota. The backend polls YouTube once per interval for every open window: every 30 s uses about 3,000 of the daily 10,000 quota units for up to 50 feeds.</p>
-        <p class="hint"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials. Restrict it to the YouTube Data API; an address restriction must allow http://localhost:8080/*. The key is saved with the wall on this laptop (%LOCALAPPDATA%\IXG Wall), never in the project folder.</p>
+        <p class="hint"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials. Restrict it to the YouTube Data API. The key stays on the server (secrets.json in its data folder) and is never sent back to a browser. For an address restriction, allow the server's public IP on a hosted wall, or http://localhost:8080/* on the laptop.</p>
+
+        <div class="ingest-settings">
+          <p class="telemetry muted section-title">Channel sign-in · ingest health</p>
+          <p class="yt-status" id="ingest-status" role="status"></p>
+          <form class="key-form" id="ingest-client-form" hidden>
+            <label class="key-label" for="ingest-client-id">Google OAuth client ID</label>
+            <input class="input" id="ingest-client-id" autocomplete="off" spellcheck="false" placeholder="…apps.googleusercontent.com">
+            <label class="key-label" for="ingest-client-secret">Client secret</label>
+            <div class="key-row">
+              <input class="input" id="ingest-client-secret" type="password" autocomplete="off" spellcheck="false" placeholder="GOCSPX-…">
+              <button type="submit" class="btn btn-sm">Save client</button>
+            </div>
+          </form>
+          <div class="perf-actions">
+            <button type="button" id="ingest-signin" class="btn btn-sm" hidden>Sign in with Google</button>
+            <button type="button" id="ingest-signout" class="btn btn-outline btn-sm" hidden>Sign out</button>
+            <button type="button" id="ingest-client-change" class="btn btn-ghost btn-sm" hidden>Change OAuth client</button>
+          </div>
+          <p class="hint">Sign in with the Google account that owns the channel the feeds stream to (read-only). The wall then shows how each feed's encoder stream arrives at YouTube: health (good, ok, bad), resolution, frame rate and YouTube's warnings, refreshed with the numbers above.</p>
+          <p class="hint">One-time setup in Google Cloud: under Credentials, create an OAuth client ID of type Web application, add this authorised redirect URI, then paste its ID and secret here: <code id="ingest-redirect"></code></p>
+        </div>
       </section>
       <section class="sheet-section">
-        <div class="section-head"><p class="telemetry muted">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
+        <div class="section-head"><p class="telemetry muted" id="perf-title">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
         <dl class="kv" id="perf-kv"></dl>
-        <label class="field">
+        <label class="field" data-laptop-only>
           <span>Video decoding</span>
           <select class="input select" id="decode-mode">
             <option value="software">Software (CPU)</option>
             <option value="hardware">Hardware (GPU)</option>
           </select>
         </label>
-        <p class="hint" id="decode-hint">Applies to the managed wall window and restarts it. On the benchmark laptop (Ryzen 5 4600H, Radeon graphics) software decoding dropped 0% of frames at 30 feeds; the GPU decoder dropped 4–7% at 24.</p>
-        <div class="perf-actions">
+        <p class="hint" id="decode-hint" data-laptop-only>Applies to the managed wall window and restarts it. On the benchmark laptop (Ryzen 5 4600H, Radeon graphics) software decoding dropped 0% of frames at 30 feeds; the GPU decoder dropped 4–7% at 24.</p>
+        <p class="hint" data-hosted-only>A website can't choose how the browser decodes video. On a low-spec laptop that drops frames, open the wall from a Chrome shortcut that adds <code>--disable-accelerated-video-decode</code> (software decoding: 0% dropped frames at 30 feeds on the benchmark laptop, against 4–7% on its GPU). DEPLOY.md has the exact shortcut.</p>
+        <div class="perf-actions" data-laptop-only>
           <button type="button" id="wall-launch" class="btn btn-outline btn-sm">Open managed wall window</button>
         </div>
       </section>
       <section class="sheet-section">
+        <p class="telemetry muted section-title">Sync</p>
+        <label class="switch-row">
+          <input class="switch" type="checkbox" role="switch" data-setting="syncFeeds">
+          <span>Keep all live feeds in sync</span>
+        </label>
+        <label class="field">
+          <span>Margin over the slowest feed</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="syncMarginSec" min="0" max="10" step="0.5"> s</span>
+        </label>
+        <p class="hint">Every feed carries the same input, so the wall holds all live feeds at one shared delay, read from YouTube's timestamp on each frame. The delay is the slowest feed's edge delay plus this margin. Feeds that are ahead are held back with YouTube's live rewind; feeds that fall behind catch up. Offsets up to 10 s close smoothly at 0.75× or 1.25×; bigger ones jump (YouTube lands jumps on segment boundaries, so speed finishes the job). A feed whose edge delay is more than 15 s past the others isn't synced, so it can't hold up the whole wall.</p>
+      </section>
+      <section class="sheet-section">
+        <p class="telemetry muted section-title">Releasing build-up on this PC</p>
         <label class="field">
           <span>Health check every</span>
           <span class="field-unit"><input class="input input-num" type="number" data-setting="checkIntervalSec" min="1" max="30" step="1"> s</span>
         </label>
         <label class="switch-row">
           <input class="switch" type="checkbox" role="switch" data-setting="autoResync">
-          <span>Auto-jump to live edge</span>
+          <span>Release build-up automatically</span>
         </label>
         <label class="field">
-          <span>Jump when a feed falls behind by</span>
+          <span>When a feed is behind its live edge by</span>
           <span class="field-unit"><input class="input input-num" type="number" data-setting="driftThresholdSec" min="1" max="60" step="0.5"> s</span>
         </label>
-        <p class="hint">Drift is measured against the lowest lag that feed reached since it loaded. Three jumps inside two minutes escalate to a full refresh. Anything over 90 s behind jumps regardless.</p>
+        <p class="hint">For feeds outside the sync group. Behind edge is measured from the least delay that feed has reached since it loaded. Up to 15 s closes at 1.25×; more jumps. Three jumps inside two minutes escalate to a full refresh, and anything over 90 s behind jumps regardless.</p>
         <label class="field">
           <span>Hard-refresh each feed every</span>
           <span class="field-unit"><input class="input input-num" type="number" data-setting="hardReloadMin" min="0" max="1440" step="1"> min</span>
         </label>
-        <p class="hint">Destroys and recreates the player, releasing its video buffer and memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
+        <p class="hint">Destroys and recreates the player, releasing everything it holds in this PC's memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
+      </section>
+      <section class="sheet-section" id="terms">
+        <p class="telemetry muted section-title">What the numbers mean</p>
+        <p class="hint">A frame travels: encoder → YouTube → network → this PC's player → screen. Each reading belongs to one of those steps.</p>
+        <dl class="terms">
+          <dt>Encoder <span class="tag">Your side</span></dt>
+          <dd>Encodes the picture and sends it to YouTube in order. Its own buffer and dropped frames show in the encoder's telemetry. The wall shows how its stream arrives: <strong>Ingest</strong> health (channel sign-in).</dd>
+          <dt>Edge delay <span class="tag">YouTube</span></dt>
+          <dd>The least delay a feed can have: YouTube receiving, processing and packaging the video, mostly set by the broadcast's latency mode (Normal / Low / Ultra-low in YouTube Studio). The wall can't release it, only report it.</dd>
+          <dt>Connection <span class="tag">Network</span></dt>
+          <dd>How fast YouTube's video reaches this PC against the feed's bitrate. Below 1.2× the bitrate, rebuffering is coming (Feed Meter extension).</dd>
+          <dt>Buffer ahead <span class="tag">This PC</span></dt>
+          <dd>Video already downloaded and waiting to play. A cushion, not delay: red below 4 s.</dd>
+          <dt>Rebuffering <span class="tag">This PC</span></dt>
+          <dd>The player ran out of buffer and stopped. Every second stopped adds to Behind edge.</dd>
+          <dt>Behind edge <span class="tag">This PC</span></dt>
+          <dd>How far the player sits behind the newest video YouTube has. This is the build-up the wall releases: catching up, jumping or refreshing.</dd>
+          <dt>Delay <span class="tag">Whole chain</span></dt>
+          <dd>From YouTube's timestamp on a frame to this screen: Edge delay + Behind edge. It uses this PC's clock, so keep Windows time synced; any clock offset is the same for every feed and doesn't affect sync.</dd>
+          <dt>Sync <span class="tag">Wall</span></dt>
+          <dd>Each feed's offset from the wall's shared delay. + has more delay than the others, − less. Green within ±0.3 s.</dd>
+        </dl>
       </section>
       <section class="sheet-section">
         <p class="telemetry muted section-title">Bandwidth &amp; loading</p>
@@ -230,13 +352,6 @@
         </label>
         <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
       </section>
-      <section class="sheet-section sheet-log">
-        <div class="log-head">
-          <p class="telemetry muted">Event log</p>
-          <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
-        </div>
-        <ol id="log" class="log"></ol>
-      </section>
     </div>
     <div class="halftone-fade-b sheet-ground" aria-hidden="true"></div>
   </aside>
@@ -252,6 +367,7 @@
     </div>
     <div class="feed-actions">
       <button id="fs-nerds" class="btn btn-outline btn-sm" aria-pressed="false" title="Enlarge this feed and open YouTube's own Stats for nerds: connection speed, dropped frames, codecs, latency mode">Show YouTube stats</button>
+      <button id="fs-link" class="btn btn-outline btn-sm" title="Point this feed at a different YouTube link, keeping its place, label and priority">Change link</button>
       <a id="fs-open" class="btn btn-ghost btn-sm" target="_blank" rel="noopener">Open on YouTube</a>
     </div>
     <div class="feed-body">
@@ -260,19 +376,24 @@
         <dl class="kv" id="fs-health"></dl>
         <div class="sparks">
           <figure class="spark">
-            <figcaption class="telemetry muted">Buffer health · last 5 min <span id="fs-buf-range"></span></figcaption>
-            <svg id="fs-spark-buf" preserveAspectRatio="none" aria-label="Buffer health history"></svg>
+            <figcaption class="telemetry muted">Buffer ahead · last 5 min <span id="fs-buf-range"></span></figcaption>
+            <svg id="fs-spark-buf" preserveAspectRatio="none" aria-label="Buffer ahead history"></svg>
           </figure>
           <figure class="spark">
-            <figcaption class="telemetry muted">Lag · last 5 min <span id="fs-lag-range"></span></figcaption>
-            <svg id="fs-spark-lag" preserveAspectRatio="none" aria-label="Lag history"></svg>
+            <figcaption class="telemetry muted">Delay · last 5 min <span id="fs-lag-range"></span></figcaption>
+            <svg id="fs-spark-lag" preserveAspectRatio="none" aria-label="Delay history"></svg>
           </figure>
         </div>
       </section>
       <section class="sheet-section">
         <div class="section-head"><p class="telemetry muted">Network</p></div>
         <dl class="kv" id="fs-network"></dl>
-        <p class="hint">Connection speed, dropped frames, codecs and latency mode live in YouTube's own stats panel: press Show YouTube stats. YouTube draws them inside its player and does not share the numbers with this page.</p>
+        <p class="hint">Bitrate, data received, connection speed, latency mode and dropped frames are measured inside the player by the IXG Wall Feed Meter extension. Without it, the bitrate is a typical figure for the quality; Show YouTube stats opens YouTube's own panel instead.</p>
+      </section>
+      <section class="sheet-section">
+        <div class="section-head"><p class="telemetry muted">Encoder → YouTube (ingest)</p></div>
+        <dl class="kv" id="fs-ingest"></dl>
+        <p class="hint" id="fs-ingest-hint"></p>
       </section>
       <section class="sheet-section">
         <div class="section-head"><p class="telemetry muted">Stream</p></div>
@@ -301,6 +422,39 @@
     </div>
   </aside>
 
+  <!-- Feed Meter install check: shown before feeds start when this browser lacks the extension -->
+  <dialog id="meter-dialog" class="dialog meter-dialog" aria-labelledby="meter-title">
+    <div class="dialog-form">
+      <div>
+        <p class="telemetry muted">Before the wall starts</p>
+        <h2 id="meter-title">Install the IXG Wall Feed Meter</h2>
+      </div>
+      <p class="dialog-body" id="meter-why"></p>
+      <div id="meter-store" hidden>
+        <a class="btn btn-accent" id="meter-store-link" target="_blank" rel="noopener">Add to Chrome</a>
+      </div>
+      <ol class="meter-steps" id="meter-steps">
+        <li>
+          <span>Download the extension and unzip it to a folder you'll keep, e.g. Documents.</span>
+          <a class="btn btn-sm btn-accent" id="meter-download" download>Download extension</a>
+        </li>
+        <li>
+          <span>Open <code id="meter-ext-url">chrome://extensions</code> in a new tab (paste it into the address bar) and turn on <strong>Developer mode</strong>.</span>
+          <button type="button" class="btn btn-outline btn-sm" id="meter-copy">Copy address</button>
+        </li>
+        <li>
+          <span>Click <strong>Load unpacked</strong> and choose the unzipped <strong>IXG Wall Feed Meter</strong> folder. This page continues on its own.</span>
+        </li>
+      </ol>
+      <p class="meter-status" id="meter-status" role="status"></p>
+      <label class="meter-snooze" id="meter-snooze-row"><input type="checkbox" id="meter-snooze"> Don't ask on this computer for 24 hours</label>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" id="meter-skip">Continue without it</button>
+        <button type="button" class="btn" id="meter-check">Check now</button>
+      </div>
+    </div>
+  </dialog>
+
   <dialog id="dialog" class="dialog" aria-labelledby="dialog-title">
     <form method="dialog" class="dialog-form">
       <h2 id="dialog-title"></h2>
@@ -323,6 +477,7 @@
             <button class="btn btn-xs btn-overlay" data-act="priority" aria-pressed="false" title="Priority feeds load first and stream at higher quality">Priority</button>
             <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge">Jump live</button>
             <button class="btn btn-xs btn-overlay" data-act="reload" title="Hard-refresh this player">Refresh</button>
+            <button class="btn btn-xs btn-overlay" data-act="link" title="Point this feed at a different YouTube link, keeping its place, label and priority">Change link</button>
             <button class="btn btn-xs btn-overlay btn-icon" data-act="full" title="Fullscreen" aria-label="Fullscreen">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
             </button>
@@ -339,17 +494,18 @@
           <div class="side-status">
             <div class="side-status-row"><span class="status-dot"></span><span class="side-state"></span><span class="side-for"></span></div>
             <dl class="m-grid m-vitals">
-              <div class="m" data-vital="latency" title="Time between a frame reaching YouTube and appearing here (includes this PC's clock offset)"><dt>Lag</dt><dd class="m-md" data-play="latency"></dd></div>
-              <div class="m" title="Buffer health: seconds of video downloaded ahead of the playhead. Red below 4 s"><dt>Buffer</dt><dd class="m-md" data-play="buffer"></dd></div>
-              <div class="m" data-vital="drift" title="Seconds behind this feed's usual lag"><dt>Drift</dt><dd class="m-md" data-play="drift"></dd></div>
+              <div class="m" data-vital="latency" title="Delay: from YouTube's stamp on a frame to this screen = edge delay (YouTube's side) + behind edge (this PC). Uses this PC's clock"><dt>Delay</dt><dd class="m-md" data-play="latency"></dd></div>
+              <div class="m" title="Buffer ahead: video already downloaded to this PC, waiting to play. A cushion, not delay. Red below 4 s: a rebuffer is coming"><dt>Buffer</dt><dd class="m-md" data-play="buffer"></dd></div>
+              <div class="m" data-vital="drift"><dt>Behind edge</dt><dd class="m-md" data-play="drift"></dd></div>
             </dl>
           </div>
           <p class="side-detail" data-drop="2"></p>
           <section class="side-sec">
             <div class="side-head"><span class="side-title">Playback</span><span class="prov">Measured</span></div>
             <dl class="m-grid">
-              <div class="m m-wide" title="Stalls while playing · total time stalled. Red during a stall and for a minute after"><dt>Stalls</dt><dd data-play="stalls"></dd></div>
+              <div class="m m-wide" title="Rebuffering on this PC: times the player ran out of downloaded video and stopped · total time stopped. Red while it happens and for a minute after"><dt>Rebuffers</dt><dd data-play="stalls"></dd></div>
               <div class="m" title="Resolution the player reports it is streaming" data-drop="10"><dt>Quality</dt><dd data-play="quality"></dd></div>
+              <div class="m" title="Real bitrate of this stream (video plus audio), measured by the IXG Wall Feed Meter extension. Red when the connection can't keep up" data-drop="9.7"><dt>Bitrate</dt><dd data-play="bitrate"></dd></div>
               <div class="m" title="Jumps to the live edge" data-drop="7"><dt>Jumps</dt><dd data-play="jumps"></dd></div>
               <div class="m" title="Player refreshes" data-drop="6"><dt>Refreshes</dt><dd data-play="reloads"></dd></div>
               <div class="m" title="Next scheduled refresh" data-drop="3"><dt>Refresh in</dt><dd data-play="refresh"></dd></div>
@@ -366,6 +522,7 @@
               <div class="m" data-drop="5" title="Comments on the video; live chat is separate"><dt>Comments</dt><dd data-yt="comments">—</dd></div>
               <div class="m" data-drop="4" title="Channel subscribers"><dt>Subs</dt><dd data-yt="subscribers">—</dd></div>
               <div class="m m-full" data-drop="8" title="Who can watch it, whether it may play in other sites (this wall), and HD or SD"><dt>Access</dt><dd data-yt="access">—</dd></div>
+              <div class="m m-full" data-drop="8.2"><dt>Ingest</dt><dd data-yt="ingest">—</dd></div>
             </dl>
             <button class="side-note" type="button" data-drop="1"></button>
           </section>
@@ -382,10 +539,11 @@
         <div class="tile-stats">
           <span class="stats-list">
             <span data-stat="latency" title="Time between a frame reaching YouTube and appearing here (includes this PC's clock offset)"></span>
-            <span data-stat="buffer" title="Buffer health: seconds of video downloaded ahead of the playhead"></span>
+            <span data-stat="buffer" title="Buffer ahead: video already downloaded to this PC, waiting to play"></span>
             <span data-stat="drift"></span>
             <span data-stat="quality" title="Resolution the player reports it is streaming"></span>
-            <span data-stat="stalls"></span>
+            <span data-stat="bitrate" title="Real bitrate of this stream (video plus audio), measured by the IXG Wall Feed Meter extension. Red when the connection can't keep up"></span>
+            <span data-stat="stalls" title="Rebuffering on this PC: times the player ran out of downloaded video and stopped · total time stopped"></span>
             <span data-stat="jumps"></span>
             <span data-stat="reloads"></span>
             <span data-stat="refresh"></span>
@@ -396,6 +554,7 @@
     </div>
   </template>
 
+  <script src="links.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

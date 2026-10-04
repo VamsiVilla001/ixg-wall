@@ -1,0 +1,19 @@
+# IXG Wall behind a CDN (CloudFront, or a Lightsail distribution) that serves HTTPS on an
+# AWS-provided address. The CDN adds a secret X-Origin-Verify header; anything reaching this
+# server directly, without it, gets 403, so nobody can bypass HTTPS by using the server's IP.
+# Installed as /etc/caddy/Caddyfile by deploy/setup.sh --cdn.
+:80 {
+	@cdn header X-Origin-Verify __ORIGIN_TOKEN__
+	# The live event stream must not be buffered by compression.
+	@compressible not path /api/telemetry
+
+	handle @cdn {
+		encode @compressible zstd gzip
+		header -Server
+		reverse_proxy 127.0.0.1:__PORT__
+	}
+
+	handle {
+		respond "Forbidden" 403
+	}
+}

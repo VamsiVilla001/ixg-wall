@@ -1,0 +1,34 @@
+# systemd unit for IXG Wall. deploy/setup.sh fills in the __PLACEHOLDERS__ and installs it
+# as /etc/systemd/system/ixg-wall.service. Settings live in the EnvironmentFile.
+[Unit]
+Description=IXG Wall (YouTube live monitoring wall)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__ENV_FILE__
+ExecStart=__NODE__ server.js
+Restart=always
+RestartSec=3
+# SIGTERM lets the wall save its audience history before it stops.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Hardening: the wall reads its code and writes only its data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=__DATA_DIR__
+
+[Install]
+WantedBy=multi-user.target

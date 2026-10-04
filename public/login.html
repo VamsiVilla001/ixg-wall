@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · IXG Wall</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='1' fill='%23131210'/%3E%3Cpath d='M3 4h4v3H3zM9 4h4v3H9zM3 9h4v3H3z' fill='%23f2f0eb'/%3E%3Cpath d='M9 9h4v3H9z' fill='%23f58138'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Sign-in only: everything else comes from the wall's stylesheet (SKWAD Live). */
+    .signin { flex: 1; display: grid; place-items: center; padding: 16px; overflow: auto; }
+    .signin-card {
+      width: min(380px, 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--card);
+    }
+    .signin-card h1 { margin-top: 6px; font: 800 20px/1.2 var(--font-sans); }
+    .signin-card .btn { width: 100%; }
+    .signin-card .hint { margin: 0; }
+  </style>
+</head>
+<body>
+  <main class="signin">
+    <form class="signin-card" id="signin">
+      <div>
+        <p class="telemetry muted">IXG Wall</p>
+        <h1>Sign in to the wall</h1>
+      </div>
+      <label class="field-stack">
+        <span class="telemetry muted">Password</span>
+        <input class="input" id="password" type="password" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <p class="form-error" id="error" role="alert" hidden></p>
+      <button class="btn btn-accent" type="submit" id="submit">Sign in</button>
+      <p class="hint">Ask the broadcast team for the wall password. This browser stays signed in for 30 days.</p>
+    </form>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+      // Back to the page that sent us here, but only a path on this site.
+      const raw = new URLSearchParams(location.search).get('next') || '/';
+      const next = /^\/(?![/\\])/.test(raw) ? raw : '/';
+
+      function fail(msg) {
+        $('error').textContent = msg;
+        $('error').hidden = false;
+        $('password').setAttribute('aria-invalid', 'true');
+        $('submit').disabled = false;
+        $('password').select();
+      }
+
+      $('password').addEventListener('input', () => {
+        $('error').hidden = true;
+        $('password').removeAttribute('aria-invalid');
+      });
+
+      $('signin').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        $('submit').disabled = true;
+        try {
+          const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
+            body: JSON.stringify({ password: $('password').value }),
+          });
+          if (res.ok) {
+            location.replace(next);
+            return;
+          }
+          const body = await res.json().catch(() => ({}));
+          fail(body.error || `Sign-in failed (HTTP ${res.status}).`);
+        } catch {
+          fail('Can\'t reach the wall server. Check the connection and try again.');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

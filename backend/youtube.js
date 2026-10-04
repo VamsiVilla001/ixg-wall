@@ -29,9 +29,10 @@ function seconds(iso) {
 }
 
 class YouTubeStats extends EventEmitter {
-  constructor({ wallStore, referer }) {
+  constructor({ wallStore, secrets, referer }) {
     super();
     this.wallStore = wallStore;
+    this.secrets = secrets;       // holds the API key; pages only ever see secrets.ytKeyInfo()
     this.referer = referer;       // lets a key restricted to the wall's address work from here
     this.history = {};            // video id -> [[t, viewers, likes, views, comments], ...]
     this.totals = [];             // [[t, viewers across the wall]]
@@ -91,18 +92,24 @@ class YouTubeStats extends EventEmitter {
   }
 
   key() {
-    return String(this.wallStore.wall?.settings?.ytApiKey || '').trim();
+    return this.secrets.ytApiKey();
   }
 
   ids() {
     return [...new Set((this.wallStore.wall?.streams || []).map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))];
   }
 
-  // The wall was saved: a new key, new feeds or a new interval take effect within seconds.
+  // The wall or key was saved: a new key, new feeds or a new interval take effect within seconds.
   wallChanged() {
     if (`${this.key()}|${this.ids().join(',')}|${this.pollMs()}` === this.signature) return;
     clearTimeout(this.soon);
     this.soon = setTimeout(() => this.poll(), 1500);
+  }
+
+  // A key was saved: check it with YouTube now, even if it's the same key as before.
+  keyChanged() {
+    this.signature = '';
+    this.wallChanged();
   }
 
   async get(resource, params, key) {
@@ -114,7 +121,7 @@ class YouTubeStats extends EventEmitter {
       signal: AbortSignal.timeout(15000),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(explain(body, res.status));
+    if (!res.ok) throw new Error(explain(body, res.status, this.referer));
     return body;
   }
 
@@ -238,6 +245,8 @@ class YouTubeStats extends EventEmitter {
     return {
       status: this.status,
       error: this.error,
+      key: this.secrets.ytKeyInfo(),
+      ingest: this.ingest ? this.ingest.state() : null, // channel sign-in: encoder → YouTube health
       updatedAt: this.updatedAt,
       pollMs: this.pollMs(),
       units: { used: this.units.used, limit: DAILY_QUOTA },
@@ -298,14 +307,15 @@ function analyse(series, now) {
 }
 
 // Google's error reasons, in words an operator can act on.
-function explain(body, status) {
+function explain(body, status, referer) {
   const err = body?.error || {};
   const reasons = [...(err.errors || []).map((e) => e.reason), ...(err.details || []).map((d) => d.reason)].filter(Boolean);
   const has = (...r) => r.some((x) => reasons.includes(x));
   if (has('API_KEY_INVALID', 'keyInvalid')) return 'Key not valid: check it was copied in full';
   if (has('quotaExceeded', 'dailyLimitExceeded', 'RATE_LIMIT_EXCEEDED')) return 'Daily quota used up: numbers resume after midnight Pacific time';
-  if (has('API_KEY_HTTP_REFERRER_BLOCKED', 'ipRefererBlocked', 'API_KEY_IP_ADDRESS_BLOCKED')) {
-    return 'Key restricted to other addresses: allow http://localhost:8080/* in its Google Cloud restrictions';
+  if (has('API_KEY_IP_ADDRESS_BLOCKED')) return 'Key restricted to other IP addresses: allow this server\'s public IP in its Google Cloud restrictions';
+  if (has('API_KEY_HTTP_REFERRER_BLOCKED', 'ipRefererBlocked')) {
+    return `Key restricted to other addresses: allow ${referer}* in its Google Cloud restrictions`;
   }
   if (has('accessNotConfigured', 'SERVICE_DISABLED', 'API_KEY_SERVICE_BLOCKED')) return 'YouTube Data API v3 is not enabled for this key\'s Google Cloud project';
   const msg = String(err.message || '').replace(/<[^>]*>/g, '').trim();

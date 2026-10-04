@@ -9,3 +9,7 @@ dist/
 .vscode/
 
 *.log
+
+# Local settings and data for npm run dev:hosted (see .env.example)
+.env
+.data/

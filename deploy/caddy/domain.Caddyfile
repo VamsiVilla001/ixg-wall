@@ -1,0 +1,14 @@
+# IXG Wall on its own (sub)domain. Caddy gets the HTTPS certificate from Let's Encrypt and
+# renews it; ports 80 and 443 must be open. Installed as /etc/caddy/Caddyfile by deploy/setup.sh.
+__DOMAIN__ {
+	# The live event stream must not be buffered by compression.
+	@compressible not path /api/telemetry
+	encode @compressible zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:__PORT__
+}

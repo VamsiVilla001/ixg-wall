@@ -2,13 +2,21 @@
 
 A YouTube live monitoring wall for 20–30 feeds, built on the SKWAD design system (Live mode).
 
-## Run it
+It runs two ways from the same code:
+- **On a wall laptop:** the exe, described below.
+- **As a website:** on a server with a sign-in. See **[DEPLOY.md](DEPLOY.md)** for AWS.
+
+For measured per-feed bitrate and bandwidth, install the **[IXG Wall Feed Meter](extension/README.md)** Chrome extension on each wall computer.
+
+To work on the code, read **[DEVELOPMENT.md](DEVELOPMENT.md)** and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Run it on a laptop
 
 Double-click **`dist\IXG Wall.exe`**. It starts the backend and opens the wall in its own window. Keep the black backend window open while the wall runs. The exe is self-contained: copy it to any Windows laptop with Chrome or Edge; Node isn't needed there.
 
 - Double-clicking it again while the wall runs just brings back the wall window.
 - `IXG Wall.exe --serve`: backend only. Open http://localhost:8080 in any browser.
-- Every window shares one wall. Feeds and settings are kept in `%LOCALAPPDATA%\IXG Wall\wall.json`, so the exe and the `node` version see the same wall.
+- Every window shares one wall. Feeds and settings are kept in `%LOCALAPPDATA%\IXG Wall\wall.json`, so the exe and the `node` version see the same wall. The YouTube API key is kept apart, in `secrets.json`, and is never sent back to a browser.
 
 From the project folder (needs Node 22+): `Start IXG Wall.cmd` or `npm run wall` opens the wall, and `npm start` serves it only.
 
