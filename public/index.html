@@ -234,7 +234,7 @@
         <h2>Wall behaviour</h2>
       </div>
       <div class="sheet-head-actions">
-        <button id="sign-out" class="btn btn-ghost btn-sm" hidden>Sign out</button>
+        <button id="sign-out" class="btn btn-destructive btn-sm" hidden>Sign out</button>
         <button id="drawer-close" class="btn btn-outline btn-sm">Close</button>
       </div>
     </div>
@@ -292,7 +292,7 @@
           <p class="hint">Every tile keeps one size, so feeds and stats stay legible. The page grows with the feed rows; scroll down for more. The header and playback controls stay visible.</p>
         </div>
         <div data-layout-mode="preset">
-          <p class="hint">Pick a layout from the bar under the wall: the six quick ones, or … for the rest and the custom layout builder. The layout applies to every feed: it repeats a screen at a time (2 × 2 with 10 feeds is three pages), and the wall scrolls a page at a time. Each page's first feed takes its biggest box; press Main on a feed to put it there, or drag a feed's name bar onto another to swap them.</p>
+          <p class="hint">Pick a layout from the bar under the wall: the six quick ones, or … for the rest and the custom layout builder. It applies to every feed, a screen at a time (2 × 2 with 10 feeds is three pages; the last is only as tall as its feeds). Each page's first feed takes its biggest box: press Main on a feed to put it there, or drag any feed by its picture or name bar to a new place.</p>
         </div>
         <div data-layout-mode="fit">
           <label class="field">
@@ -317,7 +317,7 @@
             <option value="hd1080">1080p</option>
           </select>
         </label>
-        <p class="hint">With the Feed Meter extension, every feed on the wall streams at this quality, whatever its size on screen: the extension sets it inside each player, as YouTube's own quality menu does, and changes apply within about 15 s without a refresh. A stream that doesn't offer it plays at the nearest level below. If the link or the laptop can't keep up, feeds are held at 480p, priority feeds last. Without the extension, YouTube sizes quality to the player, so only feeds on screen in scroll mode get this quality (one scrolled away drops to 480p after a minute), and lowering it refreshes them.</p>
+        <p class="hint">With the Feed Meter extension, every feed streams at this quality whatever its size on screen, and changes apply within about 15 s without a refresh; a stream that doesn't offer it plays at the nearest level below. If the link or the computer can't keep up, feeds are held at 480p, priority feeds last. Without the extension, YouTube sizes quality to the player, so only feeds on screen in the scroll and preset layouts get it (one scrolled away drops to 480p after a minute), and lowering it refreshes them.</p>
         <label class="switch-row">
           <input class="switch" type="checkbox" role="switch" data-setting="showStats">
           <span>Show telemetry on feeds</span>
@@ -470,7 +470,7 @@
           <span>Start feeds</span>
           <span class="field-unit"><input class="input input-num" type="number" data-setting="loadConcurrency" min="1" max="6" step="1"> at a time</span>
         </label>
-        <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
+        <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once.</p>
       </section>
     </div>
   </aside>

@@ -3508,12 +3508,13 @@
     meterActive() ? (reporting < mounted.length ? 'warn' : 'ok') : 'warn'];
     // Hosted, the server isn't this computer: what the browser and the Feed Meter can tell.
     const m = machine();
-    const needsMeter = 'Needs the Feed Meter 1.4 or newer in this browser';
+    // Rows nothing here can measure are left out rather than shown as — or Not available.
+    const measured = (rows) => rows.filter((r) => r && r[1] != null && r[1] !== 'Not available');
     if (server.hosted) {
-      fillKv($('#perf-kv'), [
+      fillKv($('#perf-kv'), measured([
         meterRow,
-        ['CPU', m?.cpu != null ? `${pct(m.cpu)} of ${m.cores} threads` : needsMeter, toneFor(m?.cpu, 75, PERF_BUSY_CPU)],
-        ['Memory', m?.memUsedPct != null ? `${pct(m.memUsedPct)} of ${m.memTotalGB} GB` : needsMeter, toneFor(m?.memUsedPct, 85, PERF_BUSY_MEM)],
+        ['CPU', m?.cpu != null ? `${pct(m.cpu)} of ${m.cores} threads` : null, toneFor(m?.cpu, 75, PERF_BUSY_CPU)],
+        ['Memory', m?.memUsedPct != null ? `${pct(m.memUsedPct)} of ${m.memTotalGB} GB` : null, toneFor(m?.memUsedPct, 85, PERF_BUSY_MEM)],
         ['Wall tab memory', ...memoryReadout()],
         ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
           perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
@@ -3521,10 +3522,10 @@
           cpuPressure === 'critical' ? 'bad' : cpuPressure === 'serious' ? 'warn' : ''],
         ['Decoding in this window', decodeHere ? (decodeHere === 'hardware' ? 'Hardware (GPU)' : 'Software (CPU)') : null],
         ['Server', backendFresh() ? 'Connected' : 'Offline: can\'t reach the wall server', backendFresh() ? '' : 'warn'],
-      ]);
+      ]));
       return;
     }
-    fillKv($('#perf-kv'), [
+    fillKv($('#perf-kv'), measured([
       ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
         perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
       ['CPU', m?.cpu != null ? `${pct(m.cpu)} of ${m.cores} threads${m.source === 'meter' ? ' · Feed Meter' : ''}` : null, toneFor(m?.cpu, 75, PERF_BUSY_CPU)],
@@ -3546,7 +3547,7 @@
       ['This window', managedWindow ? 'Managed wall window' : 'Ordinary browser tab'],
       ['Backend', backendFresh() ? `Connected · ${t.agent === 'ok' ? 'all counters' : t.agent === 'unsupported' ? 'CPU and memory only' : 'counters starting'}` : 'Offline: run npm run wall',
         backendFresh() ? '' : 'warn'],
-    ]);
+    ]));
     const $mode = $('#decode-mode');
     if (b?.decode && document.activeElement !== $mode) $mode.value = b.decode;
     $mode.disabled = !t || !b?.supported;
