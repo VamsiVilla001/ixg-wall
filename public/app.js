@@ -4350,6 +4350,15 @@
     $readout.cpu.parentElement.title = m
       ? `Whole-computer CPU across ${m.cores} threads, ${m.source === 'meter' ? 'read by the Feed Meter' : 'measured by the backend'}${cpuPressure ? ` · browser CPU pressure: ${cpuPressure}` : ''}${perf.level !== 'ok' ? ` · ${perf.level}: ${perf.reason}` : ''}`
       : server.hosted ? 'Install the Feed Meter 1.4 or newer (Settings → Install Feed Meter) to measure this computer' : 'Backend offline';
+    // Memory: the same source. Past PERF_BUSY_MEM Windows pages to disk, which stutters video.
+    const mem = m?.memUsedPct != null ? m : null;
+    setText($('#r-mem'), mem ? `${Math.round(mem.memUsedPct)}%` : server.hosted ? 'N·A' : '—');
+    setText($('#r-mem-tag'), mem ? 'Measured' : 'N·A');
+    setText($('#r-mem-desc'), mem ? `${(mem.memTotalGB * mem.memUsedPct / 100).toFixed(1)} of ${mem.memTotalGB} GB in use across this computer${mem.source === 'meter' ? ', read by the Feed Meter' : ''}.`
+      : server.hosted ? 'Needs the Feed Meter 1.4 or newer in this browser to measure this computer.' : 'Memory in use across this computer.');
+    $('#r-mem').dataset.tone = mem?.memUsedPct >= PERF_BUSY_MEM ? 'bad' : mem?.memUsedPct >= 85 ? 'warn' : '';
+    $('#r-mem-wrap').title = mem ? `Whole-computer memory, ${mem.source === 'meter' ? 'read by the Feed Meter' : 'measured by the backend'} · above ${PERF_BUSY_MEM}% Windows pages to disk and video stutters`
+      : server.hosted ? 'Install the Feed Meter 1.4 or newer (Settings → Install Feed Meter) to measure this computer' : 'Backend offline';
     // Mixed walls show live CCV; a wall of ended broadcasts shows their total views.
     const audience = wallAudience(list);
     $('#r-ccv-wrap').hidden = !hasYtKey() || !list.length;
