@@ -5,8 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { DATA_DIR } = require('./paths');
+const { GOOGLE, describeGoogleError } = require('./google-credentials');
 
-const API = process.env.IXG_YOUTUBE_API || 'https://www.googleapis.com/youtube/v3';
 const HISTORY_FILE = path.join(DATA_DIR, 'youtube-history.json');
 const POLL_DEFAULT_S = 30;              // Settings → YouTube API → Refresh every (15–300 s)
 const CHANNELS_EVERY_MS = 10 * 60000;   // subscriber counts barely move; 1 unit per 50 channels
@@ -29,11 +29,10 @@ function seconds(iso) {
 }
 
 class YouTubeStats extends EventEmitter {
-  constructor({ wallStore, secrets, referer }) {
+  constructor({ wallStore, credentials }) {
     super();
     this.wallStore = wallStore;
-    this.secrets = secrets;       // holds the API key; pages only ever see secrets.ytKeyInfo()
-    this.referer = referer;       // lets a key restricted to the wall's address work from here
+    this.credentials = credentials; // whoever's API key is saved; pages only ever see keyInfo()
     this.history = {};            // video id -> [[t, viewers, likes, views, comments], ...]
     this.totals = [];             // [[t, viewers across the wall]]
     this.latest = {};             // video id -> what YouTube reported last
@@ -92,7 +91,7 @@ class YouTubeStats extends EventEmitter {
   }
 
   key() {
-    return this.secrets.ytApiKey();
+    return this.credentials.apiKey();
   }
 
   ids() {
@@ -112,16 +111,24 @@ class YouTubeStats extends EventEmitter {
     this.wallChanged();
   }
 
+  // A feed's encoder stream just stopped (youtube-ingest.js): read whether its broadcast
+  // ended now, not at the next poll.
+  pollSoon() {
+    if (!this.key()) return;
+    clearTimeout(this.soon);
+    this.soon = setTimeout(() => this.poll(), 1500);
+  }
+
   async get(resource, params, key) {
     const today = quotaDay();
     if (this.units.day !== today) this.units = { day: today, used: 0 };
     this.units.used += 1;
-    const res = await fetch(`${API}/${resource}?${new URLSearchParams({ ...params, key })}`, {
-      headers: { Referer: this.referer },
+    const res = await fetch(`${GOOGLE.API}/${resource}?${new URLSearchParams({ ...params, key })}`, {
+      headers: { Referer: this.credentials.referer },
       signal: AbortSignal.timeout(15000),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(explain(body, res.status, this.referer));
+    if (!res.ok) throw new Error(describeGoogleError(body, res.status, this.credentials.referer).message);
     return body;
   }
 
@@ -245,7 +252,7 @@ class YouTubeStats extends EventEmitter {
     return {
       status: this.status,
       error: this.error,
-      key: this.secrets.ytKeyInfo(),
+      key: this.credentials.keyInfo(),
       ingest: this.ingest ? this.ingest.state() : null, // channel sign-in: encoder → YouTube health
       updatedAt: this.updatedAt,
       pollMs: this.pollMs(),
@@ -304,22 +311,6 @@ function analyse(series, now) {
     viewsPerHour: perHour(series, 3, now),
     trackedSince: series[0]?.[0] ?? null,
   };
-}
-
-// Google's error reasons, in words an operator can act on.
-function explain(body, status, referer) {
-  const err = body?.error || {};
-  const reasons = [...(err.errors || []).map((e) => e.reason), ...(err.details || []).map((d) => d.reason)].filter(Boolean);
-  const has = (...r) => r.some((x) => reasons.includes(x));
-  if (has('API_KEY_INVALID', 'keyInvalid')) return 'Key not valid: check it was copied in full';
-  if (has('quotaExceeded', 'dailyLimitExceeded', 'RATE_LIMIT_EXCEEDED')) return 'Daily quota used up: numbers resume after midnight Pacific time';
-  if (has('API_KEY_IP_ADDRESS_BLOCKED')) return 'Key restricted to other IP addresses: allow this server\'s public IP in its Google Cloud restrictions';
-  if (has('API_KEY_HTTP_REFERRER_BLOCKED', 'ipRefererBlocked')) {
-    return `Key restricted to other addresses: allow ${referer}* in its Google Cloud restrictions`;
-  }
-  if (has('accessNotConfigured', 'SERVICE_DISABLED', 'API_KEY_SERVICE_BLOCKED')) return 'YouTube Data API v3 is not enabled for this key\'s Google Cloud project';
-  const msg = String(err.message || '').replace(/<[^>]*>/g, '').trim();
-  return msg || `YouTube answered HTTP ${status}`;
 }
 
 module.exports = { YouTubeStats };

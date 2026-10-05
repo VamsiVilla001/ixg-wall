@@ -1,8 +1,9 @@
 # IXG Wall telemetry agent (Windows).
-# Prints one JSON line per interval: network throughput of the busiest adapter, and the
-# browsers' load on the GPU's video and 3D engines. CPU and memory are read by Node itself.
+# Prints one JSON line per interval: network throughput of the busiest adapter, the
+# browsers' load on the GPU's video and 3D engines, and the memory of the wall window's
+# browser. CPU and the laptop's memory are read by Node itself.
 # Counters stay open between samples, so a sample costs milliseconds, not a PDH query.
-param([int]$IntervalMs = 2000)
+param([int]$IntervalMs = 2000, [string]$WallProfile = '')
 
 $ErrorActionPreference = 'SilentlyContinue'
 
@@ -49,6 +50,29 @@ function Update-GpuSets {
   }
 }
 
+# The managed wall window runs in its own browser profile, and every process of that
+# browser carries the profile folder on its command line. Its renderers (other than
+# extension ones) hold the wall page and its players: the wall tab's memory, as Chrome's
+# Task Manager counts it (private bytes). A WMI query costs ~0.1-0.3 s, so every 10 s.
+$wallNeedle = $WallProfile.ToLowerInvariant()
+$wallMem = $null
+$wallAt = [datetime]::MinValue
+function Get-WallMemory {
+  $tab = 0.0; $all = 0.0; $renderers = 0
+  $procs = Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" -Property ProcessId, CommandLine, PrivatePageCount
+  foreach ($p in $procs) {
+    $cl = [string]$p.CommandLine
+    if (-not $cl.ToLowerInvariant().Contains($wallNeedle)) { continue }
+    $all += [double]$p.PrivatePageCount
+    if ($cl.Contains('--type=renderer') -and -not $cl.Contains('--extension-process')) {
+      $tab += [double]$p.PrivatePageCount
+      $renderers++
+    }
+  }
+  if ($all -eq 0) { return $null }
+  return [ordered]@{ tabMB = [math]::Round($tab / 1MB); browserMB = [math]::Round($all / 1MB); renderers = $renderers }
+}
+
 $rx = New-CounterList 'Network Interface' 'Bytes Received/sec' '.'
 $tx = New-CounterList 'Network Interface' 'Bytes Sent/sec' '.'
 Update-GpuSets
@@ -61,6 +85,10 @@ while ($true) {
     foreach ($c in @($video) + @($gpu3d)) { $c.Counter.Dispose() }
     Update-GpuSets
     $rebuildAt = (Get-Date).AddSeconds($(if (($video.Count + $gpu3d.Count) -eq 0) { 5 } else { 30 }))
+  }
+  if ($wallNeedle -and (Get-Date) -gt $wallAt) {
+    $wallMem = Get-WallMemory
+    $wallAt = (Get-Date).AddSeconds(10)
   }
   $busiest = $null; $busiestRx = -1; $txFor = 0
   for ($i = 0; $i -lt $rx.Count; $i++) {
@@ -75,6 +103,7 @@ while ($true) {
     nic = $busiest
     video = Get-EngineLoad $video
     gpu3d = Get-EngineLoad $gpu3d
+    wall = $wallMem
   }
   [Console]::Out.WriteLine(($line | ConvertTo-Json -Compress))
   [Console]::Out.Flush()

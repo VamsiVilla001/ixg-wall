@@ -10,10 +10,11 @@ const { assetPath } = require('./assets');
 const AGENT_STALE_MS = 8000;
 
 class Telemetry extends EventEmitter {
-  constructor({ intervalMs = 2000, hosted = false } = {}) {
+  constructor({ intervalMs = 2000, hosted = false, wallProfile = '' } = {}) {
     super();
     this.intervalMs = intervalMs;
     this.hosted = hosted;
+    this.wallProfile = wallProfile; // the managed wall window's browser profile: its memory is measured
     this.latest = null;
     this.agentSample = null;
     this.agent = null;
@@ -40,7 +41,9 @@ class Telemetry extends EventEmitter {
     } catch {
       return; // can't write the agent out; CPU and memory still come from Node
     }
-    const agent = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-IntervalMs', String(this.intervalMs)], {
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-IntervalMs', String(this.intervalMs)];
+    if (this.wallProfile) args.push('-WallProfile', this.wallProfile);
+    const agent = spawn('powershell', args, {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -91,6 +94,11 @@ class Telemetry extends EventEmitter {
       nic: a?.nic || null,
       videoEngine: a?.video ?? null,
       gpu3d: a?.gpu3d ?? null,
+      // The managed wall window's memory: tab = the wall page and its players (renderers),
+      // browser = every process of that browser. Null when the window isn't open.
+      wallMem: a?.wall && Number.isFinite(a.wall.tabMB)
+        ? { tabMB: a.wall.tabMB, browserMB: a.wall.browserMB, renderers: a.wall.renderers }
+        : null,
       agent: process.platform !== 'win32' ? 'unsupported' : a ? 'ok' : 'starting',
     };
     this.emit('sample', this.latest);

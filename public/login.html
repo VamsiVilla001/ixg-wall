@@ -1,13 +1,13 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · IXG Wall</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='1' fill='%23131210'/%3E%3Cpath d='M3 4h4v3H3zM9 4h4v3H9zM3 9h4v3H3z' fill='%23f2f0eb'/%3E%3Cpath d='M9 9h4v3H9z' fill='%23f58138'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%227.446%207.5%2055.108%2044.926%22%20role%3D%22img%22%20aria-label%3D%22IXG%22%3E%3Ctitle%3EIXG%20logo%3C%2Ftitle%3E%3Cstyle%3Epath%7Bfill%3A%23000%7D%40media%20(prefers-color-scheme%3Adark)%7Bpath%7Bfill%3A%23fff%7D%7D%3C%2Fstyle%3E%3Cpath%20d%3D%22M14.8931%207.5H7.44629V15H14.8931V7.5Z%22%2F%3E%3Cpath%20d%3D%22M14.8931%2018.7132H7.44629V41.2132H14.8931V18.7132Z%22%2F%3E%3Cpath%20d%3D%22M62.5538%2044.9265H47.6602V52.4265H62.5538V44.9265Z%22%2F%3E%3Cpath%20d%3D%22M40.2129%2018.7132V41.2132H62.5533V18.7132H40.2129ZM55.1065%2033.7132H47.6597V26.2132H55.1065V33.7132Z%22%2F%3E%3Cpath%20d%3D%22M27.553%2024.66L21.6485%2018.7132H16.3828V24.0165L22.2874%2029.9632L16.3828%2035.91V41.2132H21.6485C22.5972%2040.2577%2026.687%2036.1387%2027.553%2035.2665C28.4191%2036.1387%2032.5089%2040.2577%2033.4576%2041.2132H38.7232V35.91L32.8187%2029.9632L38.7232%2024.0165V18.7132H33.4576L27.553%2024.66Z%22%2F%3E%3C%2Fsvg%3E">
+  <link rel="stylesheet" href="/style.css">
   <style>
-    /* Sign-in only: everything else comes from the wall's stylesheet (SKWAD Live). */
+    /* Sign-in only: everything else comes from the wall's stylesheet (IXG Design System). */
     .signin { flex: 1; display: grid; place-items: center; padding: 16px; overflow: auto; }
     .signin-card {
       width: min(380px, 100%);
@@ -19,25 +19,39 @@
       border-radius: var(--radius-lg);
       background: var(--card);
     }
-    .signin-card h1 { margin-top: 6px; font: 800 20px/1.2 var(--font-sans); }
+    .signin-card h1 { margin-top: 6px; font: 500 21px/1.25 var(--font-display); }
     .signin-card .btn { width: 100%; }
     .signin-card .hint { margin: 0; }
+    /* Admin / User: a two-way toggle, the selected side filled with ink */
+    .role-toggle { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; gap: 2px; border-radius: var(--radius-md); background: var(--secondary); box-shadow: inset 0 0 0 1px var(--border); }
+    .role-toggle button { height: 30px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: 600 10.5px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
+    .role-toggle button:hover { color: var(--foreground); }
+    .role-toggle button[aria-checked="true"] { background: var(--foreground); color: var(--background); }
+    .role-toggle button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   </style>
 </head>
 <body>
   <main class="signin">
     <form class="signin-card" id="signin">
       <div>
-        <p class="telemetry muted">IXG Wall</p>
-        <h1>Sign in to the wall</h1>
+        <div class="brand"><img class="brand-logo" src="/ixg-logo.svg" alt="IXG"><span class="brand-sub">Wall</span></div>
+        <h1 id="title">Sign in to the wall</h1>
       </div>
-      <label class="field-stack">
-        <span class="telemetry muted">Password</span>
+      <div class="role-toggle" role="radiogroup" aria-label="Sign in as">
+        <button type="button" role="radio" id="as-admin" aria-checked="true">Admin</button>
+        <button type="button" role="radio" id="as-user" aria-checked="false">User</button>
+      </div>
+      <label class="field-stack" id="admin-field">
+        <span class="telemetry muted">Wall password</span>
         <input class="input" id="password" type="password" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <label class="field-stack" id="user-field" hidden>
+        <span class="telemetry muted">Your user link</span>
+        <input class="input" id="link" type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#…">
       </label>
       <p class="form-error" id="error" role="alert" hidden></p>
       <button class="btn btn-accent" type="submit" id="submit">Sign in</button>
-      <p class="hint">Ask the broadcast team for the wall password. This browser stays signed in for 30 days.</p>
+      <p class="hint" id="hint"></p>
     </form>
   </main>
   <script>
@@ -47,28 +61,47 @@
       // Back to the page that sent us here, but only a path on this site.
       const raw = new URLSearchParams(location.search).get('next') || '/';
       const next = /^\/(?![/\\])/.test(raw) ? raw : '/';
+      const HINTS = {
+        admin: 'Admins hold the wall password and manage the YouTube key, the channel sign-in and user links. This browser stays signed in for 30 days.',
+        user: 'Open the link the wall\'s admin shared with you, or paste it here. No password needed.',
+      };
+      let role = 'admin';
 
-      function fail(msg) {
-        $('error').textContent = msg;
-        $('error').hidden = false;
-        $('password').setAttribute('aria-invalid', 'true');
-        $('submit').disabled = false;
-        $('password').select();
+      function setRole(r, focus = true) {
+        role = r;
+        $('as-admin').setAttribute('aria-checked', String(r === 'admin'));
+        $('as-user').setAttribute('aria-checked', String(r === 'user'));
+        $('admin-field').hidden = r !== 'admin';
+        $('user-field').hidden = r !== 'user';
+        $('password').required = r === 'admin';
+        $('link').required = r === 'user';
+        $('hint').textContent = HINTS[r];
+        clearError();
+        if (focus) (r === 'admin' ? $('password') : $('link')).focus();
       }
 
-      $('password').addEventListener('input', () => {
+      function clearError() {
         $('error').hidden = true;
         $('password').removeAttribute('aria-invalid');
-      });
+        $('link').removeAttribute('aria-invalid');
+      }
 
-      $('signin').addEventListener('submit', async (e) => {
-        e.preventDefault();
+      function fail(msg) {
+        const input = role === 'admin' ? $('password') : $('link');
+        $('error').textContent = msg;
+        $('error').hidden = false;
+        input.setAttribute('aria-invalid', 'true');
+        $('submit').disabled = false;
+        input.select();
+      }
+
+      async function signIn() {
         $('submit').disabled = true;
         try {
-          const res = await fetch('/api/login', {
+          const res = await fetch(role === 'admin' ? '/api/login' : '/api/join', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
-            body: JSON.stringify({ password: $('password').value }),
+            body: JSON.stringify(role === 'admin' ? { password: $('password').value } : { link: $('link').value }),
           });
           if (res.ok) {
             location.replace(next);
@@ -79,7 +112,29 @@
         } catch {
           fail('Can\'t reach the wall server. Check the connection and try again.');
         }
+      }
+
+      $('as-admin').addEventListener('click', () => setRole('admin'));
+      $('as-user').addEventListener('click', () => setRole('user'));
+      $('password').addEventListener('input', clearError);
+      $('link').addEventListener('input', clearError);
+      $('signin').addEventListener('submit', (e) => {
+        e.preventDefault();
+        signIn();
       });
+
+      // Opened from a user link (/join#token): sign in with it straight away, and take the
+      // token out of the address bar and history.
+      const token = location.hash.slice(1);
+      if (location.pathname === '/join' && token) {
+        history.replaceState(null, '', '/join');
+        setRole('user', false);
+        $('title').textContent = 'Opening the wall…';
+        $('link').value = token;
+        signIn().then(() => { $('title').textContent = 'Sign in to the wall'; });
+      } else {
+        setRole(location.pathname === '/join' ? 'user' : 'admin');
+      }
     })();
   </script>
 </body>

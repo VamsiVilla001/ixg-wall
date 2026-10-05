@@ -1,8 +1,11 @@
 # Deploying IXG Wall as a website (AWS)
 
-The hosted wall is the same app as the laptop exe, run with `IXG_HOSTED=1` on a small Linux server:
+The hosted wall is the same app the laptops run, started with `IXG_HOSTED=1` on a small Linux server:
 
-- **Sign-in:** one shared password, set on the server. A browser stays signed in for 30 days.
+- **Sign-in, two roles, no usernames:**
+  - **Admin:** the wall password, set on the server. Admins manage the YouTube key, the channel sign-in and user links.
+  - **User:** a link an admin generates. Users operate the wall (order, remove and rename feeds, switch sessions, layout, playback). They can't add feeds or change a feed's link, and have no YouTube settings: whether a link ships the YouTube numbers and ingest health is the admin's choice when making it (on by default). Those are read with the admin's key and channel sign-ins, which users never see or change. The server enforces all of this, not just the page.
+  - A browser stays signed in for 30 days.
 - **YouTube key on the server:** the key is kept server-side and never sent to a browser.
 - **No laptop features:** no managed wall window and no laptop telemetry, because the server isn't the screen showing the wall. Drift correction, refreshes, the load queue and the YouTube analytics all work as before.
 
@@ -67,22 +70,33 @@ Open `https://wall.yourcompany.com`. Caddy gets the certificate on the first req
 
 ### 5. YouTube Data API key
 
+The key can come from anyone's Google Cloud project; nothing is built into the wall.
+
 1. In Google Cloud, edit the key and set **Application restrictions → IP addresses** to the server's IP. Keep **API restrictions** on YouTube Data API v3.
-2. On the wall, open Settings → YouTube API, paste the key, and press Save key. The server keeps it in `/var/lib/ixg-wall/secrets.json` and never sends it back to the page.
+2. On the wall, open Settings → YouTube API, paste the key, and press Save key.
+   - The server checks it with YouTube first: a key Google calls invalid is refused and never replaces a working one, and a restriction problem is shown with its fix.
+   - The server keeps it in `/var/lib/ixg-wall/secrets.json` and never sends it back to the page.
    - To manage it on the server instead, set `YOUTUBE_API_KEY=` in `/etc/ixg-wall/ixg-wall.env` and run `sudo systemctl restart ixg-wall`. The Settings field then becomes read-only.
 
 ### 6. Channel sign-in for ingest health (optional)
 
-This shows how each feed's encoder stream arrives at YouTube: health, resolution, frame rate, and YouTube's warnings such as "bitrate lower than recommended". It needs the channel that owns the broadcasts to sign in, read-only.
+This shows how each feed's encoder stream arrives at YouTube: health, resolution, frame rate, and YouTube's warnings such as "bitrate lower than recommended". It needs each channel that owns broadcasts on the wall to sign in, read-only. Several channels can be signed in at once (for example KRAFTON INDIA ESPORTS and Rubix IXG), and each feed's ingest comes from the channel that owns it.
+
+The OAuth client can come from anyone's Google Cloud project; nothing is built into the wall.
 
 1. In Google Cloud (the same project as the API key is fine), open **Google Auth Platform** and set up the consent screen.
    - **User type:** if the channel's Google account is in your company's Google Workspace, choose **Internal**.
-   - If you choose **External** and leave the app in *Testing*, Google expires the sign-in every 7 days.
+   - If you choose **External**, the app starts in *Testing*: only the Google accounts listed under **Audience → Test users** can sign in. Anyone else gets "Access blocked: … has not completed the Google verification process" (Error 403: access_denied). Add the account each channel signs in with (for a brand channel, the person's own Google account that manages it), and Google also expires these sign-ins every 7 days.
+   - To stop the 7-day expiry, press **Publish app** under **Audience**. The read-only YouTube scope is "sensitive", so until Google verifies the app, channels see "Google hasn't verified this app" and continue through **Advanced → Go to … (unsafe)**.
 2. Under **Credentials → Create credentials → OAuth client ID**, choose type **Web application**, and add this authorised redirect URI:
    `https://wall.yourcompany.com/api/youtube/oauth/callback`. The wall shows the exact address under Settings → YouTube API → Channel sign-in.
-3. On the wall, paste the client ID and secret into Settings → YouTube API → **Channel sign-in**.
+3. On the wall, paste the client ID and secret into Settings → YouTube API → **Channel sign-in** and press Save client.
+   - **The server checks the client with Google first.** A wrong ID or secret is refused. If the redirect URI isn't registered yet, the wall says exactly which address to add: add it in Google Cloud, then press **Check again**.
    - Or set `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` in `/etc/ixg-wall/ixg-wall.env` and restart.
-4. Press **Sign in with Google** and sign in with the channel's account. The server keeps the sign-in in `secrets.json`; no browser ever receives it, and the stream keys are never requested.
+4. Press **Sign in with Google** and sign in with a channel's account. For each further channel, press **Add another channel**.
+   - The server keeps each sign-in in `secrets.json`; no browser ever receives it, and the stream keys are never requested.
+   - Each channel can be signed out on its own. If Google stops honouring a sign-in, the channel shows **Sign in again**.
+   - Quota: each poll uses 1 unit per signed-in channel with feeds on the wall, from the OAuth client's project. Settings shows the daily estimate.
 
 ## Option B: no domain (CloudFront address)
 
@@ -115,10 +129,13 @@ The wall's live updates are an event stream. The server pings it every 15 s, ins
 | Update to the latest code | `sudo bash /opt/ixg-wall/deploy/update.sh`, then reload open walls |
 | Status / restart | `systemctl status ixg-wall` · `sudo systemctl restart ixg-wall` |
 | Live logs | `journalctl -u ixg-wall -f` (Caddy: `journalctl -u caddy -f`) |
-| Change the password | Edit `IXG_PASSWORD` in `/etc/ixg-wall/ixg-wall.env`, then restart. Everyone is signed out. |
+| Change the password | Edit `IXG_PASSWORD` in `/etc/ixg-wall/ixg-wall.env`, then restart. Everyone is signed out, users included; their links keep working. |
+| Let someone in as a user | Settings → **User links** → name it → **Generate link**, and send them the link. **Revoke** signs out everyone who used it. |
 | Back up | `/var/lib/ixg-wall` (wall, key, audience history) and `/etc/ixg-wall`. On Lightsail, enable automatic snapshots. |
 
-Wrong passwords are slowed down, and 10 from one address within 15 minutes lock it out for the rest of the window.
+Wrong passwords and wrong user links are slowed down, and 10 from one address within 15 minutes lock it out for the rest of the window.
+
+Share the wall password only with admins. Everyone else gets a user link: the sign-in page has an **Admin / User** toggle, and opening a user link signs the browser in by itself.
 
 ## The wall laptops
 
@@ -131,8 +148,8 @@ Wrong passwords are slowed down, and 10 from one address within 15 minutes lock 
   ```
 
   - **The separate `--user-data-dir` matters.** It makes the flags apply even when Chrome is already open. That profile signs in once.
-  - **The other flags keep feeds smooth.** They stop throttling when other windows cover the wall, and allow autoplay. They're the same flags the laptop exe uses.
-- **The laptop exe still works** for a fully offline-capable setup on one machine. See README.md.
+  - **The other flags keep feeds smooth.** They stop throttling when other windows cover the wall, and allow autoplay. They're the same flags the laptop's managed wall window uses.
+- **Laptop mode still works** for a setup on one machine (`npm run wall`). See README.md.
 
 ## Troubleshooting
 

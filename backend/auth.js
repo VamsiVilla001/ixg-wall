@@ -1,5 +1,9 @@
-// Sign-in for a hosted wall: one shared password (IXG_PASSWORD) and a signed session cookie.
-// With no password set (the laptop wall) every request is allowed, as before.
+// Sign-in for a hosted wall, with two roles and no usernames:
+//   admin  the wall password (IXG_PASSWORD): everything, including the Google integrations
+//   user   a link an admin generated (user-links.js): operates the wall, never sees the
+//          YouTube API key, the OAuth client or the channel sign-ins
+// The session is a signed cookie naming the role (and the user link). With no password set
+// (the laptop wall) every request is an admin's, as before.
 const crypto = require('crypto');
 
 const COOKIE = 'ixg_session';
@@ -11,13 +15,14 @@ const FAIL_DELAY_MS = 400;         // every wrong password waits this long
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 
 class Auth {
-  constructor({ password, secret, secure }) {
+  constructor({ password, secret, secure, linkActive = () => false }) {
     this.enabled = !!password;
     this.secure = !!secure;
     this.passwordHash = this.enabled ? sha256(password) : null;
     // The signing key depends on the password, so changing IXG_PASSWORD signs everyone out.
     this.key = this.enabled ? crypto.createHmac('sha256', secret).update(this.passwordHash).digest() : null;
     this.fails = new Map(); // address -> { count, resetAt }
+    this.linkActive = linkActive; // whether a user link still works (not revoked or expired)
   }
 
   checkPassword(attempt) {
@@ -25,27 +30,41 @@ class Auth {
     return crypto.timingSafeEqual(sha256(attempt), this.passwordHash);
   }
 
-  sign(exp) {
-    return crypto.createHmac('sha256', this.key).update(`v1.${exp}`).digest('base64url');
+  // v2 names the role, so cookies from before roles (v1) no longer sign anyone in.
+  sign(exp, role, link) {
+    return crypto.createHmac('sha256', this.key).update(`v2.${exp}.${role}.${link}`).digest('base64url');
   }
 
-  // Token: <expiry ms>.<signature>. Nothing about the user is stored; there's one shared login.
-  valid(token) {
-    const m = /^(\d{12,16})\.([\w-]{43})$/.exec(token || '');
-    if (!m || Number(m[1]) < Date.now()) return false;
-    const expected = Buffer.from(this.sign(m[1]));
-    const given = Buffer.from(m[2]);
-    return expected.length === given.length && crypto.timingSafeEqual(expected, given);
+  // Token: <expiry ms>.<role>.<user link id, or ->.<signature>. Returns { role, linkId } or
+  // null. A user's session ends as soon as their link is revoked.
+  read(token) {
+    const m = /^(\d{12,16})\.(admin|user)\.([a-f0-9]{12}|-)\.([\w-]{43})$/.exec(token || '');
+    if (!m || Number(m[1]) < Date.now()) return null;
+    const [, exp, role, link, sig] = m;
+    if ((role === 'user') !== (link !== '-')) return null;
+    const expected = Buffer.from(this.sign(exp, role, link));
+    const given = Buffer.from(sig);
+    if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
+    if (role === 'user' && !this.linkActive(link)) return null;
+    return { role, linkId: role === 'user' ? link : null };
   }
 
-  // Is this request signed in? Always true when no password is set.
+  // Who is asking: { role, linkId }, or null when not signed in. Always an admin when no
+  // password is set.
+  session(req) {
+    if (!this.enabled) return { role: 'admin', linkId: null };
+    return this.read(readCookie(req.headers.cookie, COOKIE));
+  }
+
   allows(req) {
-    return !this.enabled || this.valid(readCookie(req.headers.cookie, COOKIE));
+    return !!this.session(req);
   }
 
-  sessionCookie() {
-    const exp = Date.now() + SESSION_DAYS * 86400e3;
-    return cookie(`${exp}.${this.sign(exp)}`, SESSION_DAYS * 86400, this.secure);
+  // An admin's session, or a user's from a link (ending when the link expires, if it does).
+  sessionCookie(role = 'admin', linkId = null, until = Infinity) {
+    const exp = Math.min(Date.now() + SESSION_DAYS * 86400e3, until);
+    const link = linkId || '-';
+    return cookie(`${exp}.${role}.${link}.${this.sign(exp, role, link)}`, Math.max(1, Math.floor((exp - Date.now()) / 1000)), this.secure);
   }
 
   clearCookie() {

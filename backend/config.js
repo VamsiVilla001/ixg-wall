@@ -1,7 +1,7 @@
 // Every setting the backend reads from its environment, in one place.
 //
 // Two ways to run the same code:
-//   Laptop (default)  the exe or `npm run wall`: wall window, laptop telemetry, no sign-in.
+//   Laptop (default)  `npm run wall`: wall window, laptop telemetry, no sign-in.
 //   Hosted            IXG_HOSTED=1 behind HTTPS (see DEPLOY.md): sign-in required, no
 //                     wall window or laptop telemetry (the server isn't the screen).
 const PORT = Number(process.env.PORT) || 8080;

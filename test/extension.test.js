@@ -81,5 +81,11 @@ test('the download is a valid zip of the extension, in one folder', async () => 
     assert.equal(crc, zlib.crc32(data), `${name} CRC`);
     at += 46 + nameLen;
   }
-  assert.deepEqual(names.sort(), ['IXG Wall Feed Meter/README.md', 'IXG Wall Feed Meter/manifest.json', 'IXG Wall Feed Meter/meter.js']);
+  assert.deepEqual(names.sort(), ['IXG Wall Feed Meter/README.md', 'IXG Wall Feed Meter/capture.js', 'IXG Wall Feed Meter/courier.js',
+    'IXG Wall Feed Meter/manifest.json', 'IXG Wall Feed Meter/meter.js', 'IXG Wall Feed Meter/source-youtube.js']);
+  // Everything the manifest names is in the zip, and the version the page checks matches meter.js.
+  for (const f of [manifest.background.service_worker, ...manifest.content_scripts.flatMap((c) => c.js)]) {
+    assert.ok(names.includes(`IXG Wall Feed Meter/${f}`), `${f} is shipped`);
+  }
+  assert.match(fs.readFileSync(path.join(ROOT, 'extension', 'meter.js'), 'utf8'), new RegExp(`VERSION = '${manifest.version.replace(/\\./g, '\\\\.')}'`));
 });

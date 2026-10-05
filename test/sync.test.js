@@ -15,7 +15,7 @@ const between = (start, end) => {
 };
 
 function wall() {
-  let now = 20000;
+  let now = 1791191400000; // epoch ms: YouTube's frame stamps are real time
   let timerId = 0;
   const timers = new Map();
   const context = vm.createContext({
@@ -30,11 +30,13 @@ function wall() {
     const tiles = new Map();
     const sync = { target: null, setBy: null, members: new Set(), excluded: new Map(), spread: null };
     const wall = { autoJumpsLeft: 2, stallLog: [] };
+    const timeline = { delay: null, paused: null, liveDelay: null };
     ${between('  function median(', '  function uid(')}
+    ${between('  function fmtClock(', '  // Time of day for an ISO')}
     ${between('  class Tile {', '  function addTile(')}
     ${between('  function updateSync()', '  function updateCongestion(')}
     ${between('  function applySetting(', '  function syncSettingInputs(')}
-    globalThis.controller = { Tile, settings, tiles, sync, updateSync, applySetting, PS };
+    globalThis.controller = { Tile, settings, tiles, sync, timeline, wall, updateSync, applySetting, PS };
   `, context);
   const controller = context.controller;
   const feed = (id, baseline = 30, dvr = true) => {
@@ -52,6 +54,8 @@ function wall() {
         getVideoData: () => ({ allowLiveDvr: dvr }),
         getCurrentTime: () => 100,
         seekTo: (position) => seeks.push(position),
+        // The frame on screen is `showing` seconds behind real time (YouTube's stamp).
+        getMediaReferenceTime: () => now / 1000 - (tile.showing ?? baseline),
       },
       render() {}, pulse() {}, hideCaptions() {},
     });
@@ -196,4 +200,85 @@ test('sync seeks preserve measured delay and cannot be used to rebaseline the li
   assert.equal(tile.preJumpLag, null);
   assert.equal(tile.latency, 40, 'requested landing position must not masquerade as a measurement');
   assert.equal(tile.drift, 10);
+});
+
+// A feed back at live after a refresh, measured for the first time.
+const measureFresh = (w, tile, showing) => {
+  tile.showing = showing;
+  tile.samples = [];
+  tile.playingSince = w.now() - 10000;
+  tile.measure(w.now());
+};
+
+test('the wall timeline holds feeds far past the sane-lag limit instead of jumping them to live', () => {
+  const w = wall();
+  const { tile, seeks } = w.feed('one');
+  w.feed('two');
+  w.timeline.delay = 400;
+  w.updateSync();
+  assert.equal(w.sync.target, 400);
+  assert.equal(w.sync.members.size, 2);
+  // Refreshed at live (30 s): one sample is enough to send it straight back to the wall's moment.
+  measureFresh(w, tile, 30);
+  assert.deepEqual(seeks, [100 - 370]);
+  // Held there: 400 s behind is where it belongs, so nothing pulls it to live.
+  seeks.length = 0;
+  w.advance(10000);
+  tile.lastSyncActAt = 0;
+  tile.samples = [400, 400];
+  tile.showing = 400;
+  tile.measure(w.now());
+  assert.deepEqual(seeks, []);
+  assert.equal(tile.held(), true);
+});
+
+test('a feed moved on its own seek bar leaves the wall and is held at its own delay', () => {
+  const w = wall();
+  const { tile, seeks } = w.feed('one');
+  w.feed('two');
+  w.feed('three');
+  tile.own = { delay: 200 };
+  w.updateSync();
+  assert.equal(w.sync.members.has(tile), false);
+  assert.match(w.sync.excluded.get(tile), /own seek bar/);
+  assert.equal(w.sync.members.size, 2);
+  measureFresh(w, tile, 30);
+  assert.deepEqual(seeks, [100 - 170]);
+  assert.equal(tile.syncOffset(), 30 - 200);
+});
+
+test('feeds that cannot rewind, or not that far, stay live when the wall timeline moves back', () => {
+  const w = wall();
+  const { tile: noDvr } = w.feed('no-dvr', 30, false);
+  const { tile: short } = w.feed('short');
+  w.feed('one');
+  // YouTube keeps only the last 120 s of this one.
+  short.span = { start: 0, end: 120, at: 120, k: w.now() / 1000 - 120, t: w.now() };
+  w.timeline.delay = 400;
+  w.updateSync();
+  assert.deepEqual([...w.sync.members].map((t) => t.stream.id), ['one']);
+  assert.match(w.sync.excluded.get(noDvr), /rewind/);
+  assert.match(w.sync.excluded.get(short), /keeps only the last 2:00/);
+});
+
+test('live on the wall timeline is the delay sync holds feeds at, and survives sync being off', () => {
+  const w = wall();
+  w.feed('one', 30);
+  w.feed('two', 34);
+  w.updateSync();
+  assert.equal(w.timeline.liveDelay, 35);
+  w.settings.syncFeeds = false;
+  w.updateSync();
+  assert.equal(w.timeline.liveDelay, 32);
+});
+
+test('a feed paused from the wall timeline counts as held, and leaves the pause when refreshed', () => {
+  const w = wall();
+  const { tile } = w.feed('one');
+  w.feed('two');
+  w.timeline.paused = { stamp: w.now() / 1000 - 60, tiles: new Set([tile]) };
+  w.updateSync();
+  assert.equal(tile.heldPaused(), true);
+  assert.equal(w.sync.members.has(tile), true);
+  assert.match(w.sync.excluded.get(w.tiles.get('two')), /after the wall was paused/);
 });

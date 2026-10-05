@@ -4,7 +4,7 @@
 const crypto = require('crypto');
 const { readAsset } = require('./assets');
 
-const FILES = ['manifest.json', 'meter.js', 'README.md'];
+const FILES = ['manifest.json', 'meter.js', 'courier.js', 'capture.js', 'source-youtube.js', 'README.md'];
 const FOLDER = 'IXG Wall Feed Meter'; // what the zip unpacks to
 const DOWNLOAD_PATH = '/extension/ixg-wall-feed-meter.zip';
 

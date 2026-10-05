@@ -4,20 +4,21 @@
 //   node server.js          serve the wall on http://localhost:8080
 //   node server.js --open   ...and open it in the managed wall window
 //   IXG_HOSTED=1 ...        run it as a website with a sign-in (see DEPLOY.md)
-// IXG Wall.exe (npm run build) opens the wall window by default; --serve skips it.
 // Settings come from the environment: see backend/config.js and .env.example.
 const http = require('http');
 const path = require('path');
 const config = require('./backend/config');
 const { Auth, clientAddress } = require('./backend/auth');
-const { Secrets, YT_KEY_FORMAT, OAUTH_CLIENT_ID_FORMAT, OAUTH_SECRET_FORMAT } = require('./backend/secrets');
+const { Secrets } = require('./backend/secrets');
+const { UserLinks, ID_FORMAT } = require('./backend/user-links');
+const { GoogleCredentials } = require('./backend/google-credentials');
 const { IngestHealth } = require('./backend/youtube-ingest');
 const feedMeter = require('./backend/extension');
 const { Telemetry } = require('./backend/telemetry');
-const { WallBrowser, DECODE_MODES } = require('./backend/wall-browser');
+const { WallBrowser, DECODE_MODES, PROFILE_DIR } = require('./backend/wall-browser');
 const { WallStore } = require('./backend/wall-store');
 const { YouTubeStats } = require('./backend/youtube');
-const { PACKAGED, readAsset } = require('./backend/assets');
+const { readAsset } = require('./backend/assets');
 
 const { PORT, HOST, HOSTED, PUBLIC_URL } = config;
 
@@ -28,7 +29,7 @@ if (problems.length) {
 }
 
 // The wall window is a laptop feature: a server has no screen to open it on.
-const OPEN = !HOSTED && (process.argv.includes('--open') || (PACKAGED && !process.argv.includes('--serve')));
+const OPEN = !HOSTED && process.argv.includes('--open');
 const ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, PUBLIC_URL]);
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -39,8 +40,23 @@ const TYPES = {
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
 };
-// Reachable without signing in: the sign-in page, what it loads, and the health check.
-const PUBLIC_PATHS = new Set(['/login', '/style.css', '/healthz', '/api/login', '/api/logout']);
+// Reachable without signing in: the sign-in page (also what a user link opens), what it
+// loads, and the health check.
+const PUBLIC_PATHS = new Set(['/login', '/join', '/style.css', '/ixg-tokens.css', '/ixg-logo.svg', '/healthz', '/api/login', '/api/join', '/api/logout']);
+// Wall settings only an admin may change: a user's save keeps the admin's values. The poll
+// interval spends the admin's YouTube quota; the rest are the wall computer's own.
+const ADMIN_SETTINGS = ['ytPollSec', 'memLimitMB', 'offloadEveryMin'];
+
+// Whether a wall a user wants to save holds any feed the admin never put there.
+function addsFeeds(wall) {
+  const sources = (streams) => (Array.isArray(streams) ? streams : []).map((s) => s?.source?.id);
+  const known = new Set([
+    ...sources(wallStore.wall?.streams),
+    ...(wallStore.wall?.savedSessions || []).flatMap((s) => sources(s.streams)),
+  ]);
+  const wanted = [...sources(wall.streams), ...(Array.isArray(wall.savedSessions) ? wall.savedSessions : []).flatMap((s) => sources(s?.streams))];
+  return wanted.some((id) => !known.has(id));
+}
 const isPublic = (p) => PUBLIC_PATHS.has(p) || p.startsWith('/fonts/');
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -52,19 +68,44 @@ const SECURITY_HEADERS = {
 
 const wallStore = new WallStore();
 const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: config.GOOGLE_OAUTH_CLIENT });
-const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES });
-const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED });
+const userLinks = new UserLinks(secrets);
+const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, linkActive: (id) => userLinks.active(id) });
+const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED, wallProfile: HOSTED ? '' : PROFILE_DIR });
 const wallBrowser = HOSTED ? null : new WallBrowser({ url: `http://localhost:${PORT}/` });
-const youtube = new YouTubeStats({ wallStore, secrets, referer: `${PUBLIC_URL}/` });
-const ingest = new IngestHealth({
-  secrets,
-  wallStore,
-  redirectUri: `${PUBLIC_URL}/api/youtube/oauth/callback`,
-  pollMs: () => youtube.pollMs(),
-});
+// Anyone's YouTube key and Google OAuth client, checked with Google before they're saved.
+const credentials = new GoogleCredentials({ secrets, publicUrl: PUBLIC_URL, port: PORT });
+const youtube = new YouTubeStats({ wallStore, credentials });
+const ingest = new IngestHealth({ credentials, wallStore, pollMs: () => youtube.pollMs() });
 youtube.ingest = ingest; // its state rides along with the YouTube numbers
-const sseClients = new Set();
+const sseClients = new Map(); // response -> { role, linkId } of whoever opened it
 const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: false, hosted: true });
+
+// What a user's page gets of the YouTube state: the numbers and each feed's ingest health,
+// but nothing about the key, the OAuth client or which channels signed in, and no Google
+// error text (it can name the key's restrictions or the client).
+// A link made without YouTube gets the state of a wall with no key at all.
+function youtubeFor(role, link = null) {
+  const s = youtube.state();
+  if (role === 'admin') return s;
+  if (link && link.youtube === false) {
+    return { status: 'off', error: '', key: { set: false }, ingest: null, updatedAt: 0, pollMs: s.pollMs, units: { used: 0, limit: 0 }, total: { now: null }, videos: {} };
+  }
+  const ing = s.ingest;
+  return {
+    ...s,
+    error: s.error ? 'YouTube data is unavailable right now.' : '',
+    key: { set: !!s.key?.set },
+    ingest: ing && {
+      signedIn: ing.signedIn,
+      status: ing.status,
+      error: ing.error ? 'Ingest health is unavailable right now.' : '',
+      updatedAt: ing.updatedAt,
+      ownersEveryMs: ing.ownersEveryMs,
+      channels: [],
+      videos: ing.videos,
+    },
+  };
+}
 
 // Walls saved before the key moved to secrets.json kept it in wall.json: move it out, once.
 // Walls from before sessions get their feeds put in a saved session (see wall-store.js).
@@ -81,15 +122,34 @@ if (wallStore.legacyKey || wallStore.migrated) {
 
 function broadcast(event, data) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const res of sseClients) res.write(msg);
+  for (const res of sseClients.keys()) res.write(msg);
 }
 
-youtube.on('update', () => broadcast('youtube', youtube.state()));
-ingest.on('update', () => broadcast('youtube', youtube.state()));
+// The YouTube state goes out in three cuts: the admin's, the users', and nothing for
+// links made without YouTube.
+function broadcastYoutube() {
+  const msgs = {};
+  for (const [res, { role, linkId }] of sseClients) {
+    const link = linkId ? userLinks.get(linkId) : null;
+    const cut = role === 'admin' ? 'admin' : link?.youtube === false ? 'none' : 'user';
+    msgs[cut] ??= `event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link))}\n\n`;
+    res.write(msgs[cut]);
+  }
+}
+
+youtube.on('update', broadcastYoutube);
+ingest.on('update', broadcastYoutube);
+ingest.on('quiet', () => youtube.pollSoon()); // an encoder stopped: has YouTube ended the broadcast?
+credentials.on('key', () => youtube.keyChanged());
+credentials.on('change', () => {
+  ingest.channelsChanged();
+  broadcastYoutube();
+});
+credentials.on('checked', broadcastYoutube);
 
 telemetry.on('sample', (sample) => {
   const msg = `data: ${JSON.stringify({ ...sample, browser: browserStatus() })}\n\n`;
-  for (const res of sseClients) res.write(msg);
+  for (const res of sseClients.keys()) res.write(msg);
 });
 
 function sendJson(res, status, body, headers = {}) {
@@ -129,20 +189,63 @@ async function login(req, res) {
     return sendJson(res, 401, { error: 'Wrong password.' });
   }
   auth.succeeded(addr);
-  sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.sessionCookie() });
+  sendJson(res, 200, { ok: true, role: 'admin' }, { 'Set-Cookie': auth.sessionCookie('admin') });
 }
 
-async function handleApi(req, res, urlPath) {
+// A user link, opened or pasted: signs this browser in as a user. Wrong links count
+// towards the same lockout as wrong passwords.
+async function join(req, res) {
+  if (!auth.enabled) return sendJson(res, 409, { error: 'This wall has no sign-in, so it needs no link: open it directly.' });
+  if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+  const addr = clientAddress(req);
+  const wait = auth.lockedFor(addr);
+  if (wait) {
+    return sendJson(res, 429, { error: `Too many wrong links. Try again in ${Math.ceil(wait / 60)} min.` }, { 'Retry-After': String(wait) });
+  }
+  const body = await readBody(req, 2000);
+  const link = userLinks.find(body.link);
+  if (!link) {
+    await auth.failed(addr);
+    console.warn(`Failed user link from ${addr}`);
+    return sendJson(res, 401, { error: 'This link doesn\'t work: it may have been revoked or have expired. Ask the wall\'s admin for a new one.' });
+  }
+  auth.succeeded(addr);
+  userLinks.used(link);
+  const until = link.expiresAt ? Date.parse(link.expiresAt) : Infinity;
+  sendJson(res, 200, { ok: true, role: 'user' }, { 'Set-Cookie': auth.sessionCookie('user', link.id, until) });
+}
+
+const adminOnly = (res) => sendJson(res, 403, { error: 'Only an admin can do this. Sign in with the wall password.' });
+
+async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/login' && req.method === 'POST') return login(req, res);
+  if (urlPath === '/api/join' && req.method === 'POST') return join(req, res);
   if (urlPath === '/api/logout' && req.method === 'POST') {
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie() });
   }
-  // What this server is: the page adapts (no laptop readouts when hosted, a Sign out button).
+  const role = session.role;
+  const admin = role === 'admin';
+  const link = session.linkId ? userLinks.get(session.linkId) : null; // the user link this session came from
+  // Integrations and the wall computer: an admin's alone. Checked here, so a user can't
+  // reach them by calling the API directly, whatever their page shows.
+  if (!admin && (urlPath.startsWith('/api/youtube/key') || urlPath.startsWith('/api/youtube/oauth/')
+    || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser')) {
+    return adminOnly(res);
+  }
+  // A link made without YouTube gets none of its data, the audience history included.
+  if (!admin && link?.youtube === false && urlPath === '/api/youtube/history') {
+    return sendJson(res, 403, { error: 'This link was made without YouTube data.' });
+  }
+  // What this server is: the page adapts (no laptop readouts when hosted, a Sign out button,
+  // and for a user, no integrations).
   if (urlPath === '/api/config' && req.method === 'GET') {
     return sendJson(res, 200, {
       hosted: HOSTED,
       auth: auth.enabled,
-      ytKey: secrets.ytKeyInfo(),
+      role,
+      linkName: link?.name || null,
+      ytKey: admin ? credentials.keyInfo() : { set: credentials.keyInfo().set && link?.youtube !== false },
+      linkYoutube: admin ? null : link?.youtube !== false, // false: the admin made this link without YouTube data
       // The Feed Meter extension: what the page checks for, and where to get it.
       extension: feedMeter.info({ extraIds: config.EXTENSION_IDS, storeUrl: config.EXTENSION_STORE_URL }),
     });
@@ -151,8 +254,8 @@ async function handleApi(req, res, urlPath) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     res.write('retry: 3000\n\n');
     if (telemetry.latest) res.write(`data: ${JSON.stringify({ ...telemetry.latest, browser: browserStatus() })}\n\n`);
-    res.write(`event: youtube\ndata: ${JSON.stringify(youtube.state())}\n\n`);
-    sseClients.add(res);
+    res.write(`event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link))}\n\n`);
+    sseClients.set(res, session);
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     req.on('close', () => { clearInterval(ping); sseClients.delete(res); });
     return;
@@ -163,6 +266,18 @@ async function handleApi(req, res, urlPath) {
   if (urlPath === '/api/wall' && req.method === 'PUT') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 512 * 1024);
+    if (!admin && body.wall && typeof body.wall === 'object') {
+      const kept = wallStore.wall?.settings || {};
+      body.wall.settings = { ...(body.wall.settings || {}) };
+      for (const key of ADMIN_SETTINGS) {
+        if (key in kept) body.wall.settings[key] = kept[key];
+        else delete body.wall.settings[key];
+      }
+      // Users don't add feeds: only links already on the wall, or in a saved session the
+      // admin left, may appear in what they save (so reordering, removing, renaming and
+      // switching sessions still work).
+      if (addsFeeds(body.wall)) return sendJson(res, 403, { error: 'Only the wall\'s admin can add feeds.' });
+    }
     if (wallStore.stale(body.wall)) {
       return sendJson(res, 409, { error: 'This page is older than sessions: reload it.' });
     }
@@ -175,43 +290,64 @@ async function handleApi(req, res, urlPath) {
     return sendJson(res, 200, { version });
   }
   if (urlPath === '/api/youtube' && req.method === 'GET') {
-    return sendJson(res, 200, youtube.state());
+    return sendJson(res, 200, youtubeFor(role, link));
   }
-  // The key goes in here and never comes back out: pages only learn whether one is set.
+  // ---- User links: an admin generates and revokes them; each signs browsers in as users ----
+  if (urlPath === '/api/links' && req.method === 'GET') {
+    return sendJson(res, 200, { enabled: auth.enabled, links: userLinks.list(PUBLIC_URL) });
+  }
+  if (urlPath === '/api/links' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    if (!auth.enabled) return sendJson(res, 409, { error: 'User links need a wall password (IXG_PASSWORD): without one, anyone who can reach the wall is already an admin.' });
+    const body = await readBody(req, 2000);
+    const { error } = userLinks.create({ name: body.name, days: body.days, youtube: body.youtube !== false });
+    if (error) return sendJson(res, 400, { error });
+    return sendJson(res, 200, { links: userLinks.list(PUBLIC_URL) });
+  }
+  if (urlPath === '/api/links/revoke' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    if (!ID_FORMAT.test(String(body.id || '')) || !userLinks.revoke(body.id)) return sendJson(res, 404, { error: 'No such link: it may already be revoked.' });
+    // Its live streams were let in before: close them. The page then finds it's signed out.
+    for (const [stream, s] of sseClients) {
+      if (s.linkId === body.id) {
+        sseClients.delete(stream);
+        stream.end();
+      }
+    }
+    return sendJson(res, 200, { links: userLinks.list(PUBLIC_URL) });
+  }
+  // Anyone's key goes in here (checked with YouTube first) and never comes back out: pages
+  // only learn whether one is set.
   if (urlPath === '/api/youtube/key' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
-    const key = typeof body.key === 'string' ? body.key.trim() : null;
-    if (key == null || (key && !YT_KEY_FORMAT.test(key))) {
-      return sendJson(res, 400, { error: 'That doesn\'t look like a YouTube Data API key (AIza…, 39 characters).' });
-    }
-    if (!secrets.setYtApiKey(key)) {
-      return sendJson(res, 409, { error: 'This server sets the key itself (YOUTUBE_API_KEY), so it can\'t be changed here.', ytKey: secrets.ytKeyInfo() });
-    }
-    youtube.keyChanged();
-    return sendJson(res, 200, { ytKey: secrets.ytKeyInfo() });
+    const result = await credentials.saveApiKey(body.key);
+    return sendJson(res, result.status, { ytKey: credentials.keyInfo(), check: result.check || null, error: result.error });
   }
-  // ---- Channel sign-in: ingest health for the feeds the channel owns ----------------
+  // ---- Channel sign-in: ingest health for the feeds each signed-in channel owns -------
+  // Anyone's OAuth client, checked with Google first; empty fields remove it.
   if (urlPath === '/api/youtube/oauth/client' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
-    const clientId = String(body.clientId || '').trim();
-    const clientSecret = String(body.clientSecret || '').trim();
-    const clearing = !clientId && !clientSecret;
-    if (!clearing && (!OAUTH_CLIENT_ID_FORMAT.test(clientId) || !OAUTH_SECRET_FORMAT.test(clientSecret))) {
-      return sendJson(res, 400, { error: 'That isn\'t a Google OAuth client: the ID ends in .apps.googleusercontent.com and the secret usually starts GOCSPX-.' });
-    }
-    if (!secrets.setOauthClient(clearing ? null : { clientId, clientSecret })) {
-      return sendJson(res, 409, { error: 'This server sets the OAuth client itself (GOOGLE_OAUTH_CLIENT_ID), so it can\'t be changed here.' });
-    }
-    ingest.access = null;
-    ingest.wallChanged();
-    broadcast('youtube', youtube.state());
+    const result = await credentials.saveOauthClient({ clientId: body.clientId, clientSecret: body.clientSecret });
+    return sendJson(res, result.status, { ingest: ingest.state(), check: result.check || null, error: result.error });
+  }
+  // "Check again" once the client is fixed in Google Cloud.
+  if (urlPath === '/api/youtube/oauth/check' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    await credentials.recheckOauthClient();
     return sendJson(res, 200, { ingest: ingest.state() });
   }
   if (urlPath === '/api/youtube/oauth/start' && req.method === 'GET') {
+    // Google would send the browser back to localhost, which is only this server on its own computer.
+    const onThisComputer = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.host || '');
+    if (credentials.localUrl && !onThisComputer) {
+      return sendHtml(res, 400, oauthPage('Sign in from the server\'s computer',
+        `Google only returns sign-ins to https addresses or to localhost, not to ${PUBLIC_URL}. On the computer running this wall, open ${credentials.localUrl}, sign in to the wall, and sign the channel in from Settings there. Every window of the wall then gets its ingest health.`, false));
+    }
     try {
-      return redirect(res, ingest.authUrl());
+      return redirect(res, credentials.authUrl());
     } catch (err) {
       return sendHtml(res, 400, oauthPage('Can\'t start the sign-in', err.message, false));
     }
@@ -219,15 +355,17 @@ async function handleApi(req, res, urlPath) {
   if (urlPath === '/api/youtube/oauth/callback' && req.method === 'GET') {
     const q = new URL(req.url, 'http://localhost').searchParams;
     try {
-      const title = await ingest.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error') });
+      const title = await credentials.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error') });
       return sendHtml(res, 200, oauthPage('Signed in', `IXG Wall now reads ingest health for the feeds on ${title}. You can close this window.`, true));
     } catch (err) {
       return sendHtml(res, 400, oauthPage('Sign-in didn\'t finish', err.message, false));
     }
   }
+  // { channelId } signs that channel out; without one, every channel.
   if (urlPath === '/api/youtube/oauth/signout' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
-    await ingest.signOut();
+    const body = await readBody(req, 2000);
+    await credentials.signOut(typeof body.channelId === 'string' && body.channelId ? body.channelId : undefined);
     return sendJson(res, 200, { ingest: ingest.state() });
   }
   if (urlPath === '/api/youtube/history' && req.method === 'GET') {
@@ -305,15 +443,22 @@ const server = http.createServer((req, res) => {
   if (HOSTED) for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   if (urlPath === '/healthz') return sendJson(res, 200, { ok: true });
 
-  const signedIn = auth.allows(req);
+  const session = auth.session(req);
+  const signedIn = !!session;
   if (!signedIn && !isPublic(urlPath)) {
-    if (urlPath.startsWith('/api/')) return sendJson(res, 401, { error: 'Sign in required' });
+    // The page's own calls get JSON. A browser opening an API address itself (the Google
+    // sign-in popup, a bookmarked link) goes to the sign-in page and comes back afterwards.
+    const navigating = req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate';
+    if (urlPath.startsWith('/api/') && !navigating) return sendJson(res, 401, { error: 'Sign in required' });
     return redirect(res, req.method === 'GET' && req.url !== '/' ? `/login?next=${encodeURIComponent(req.url)}` : '/login');
   }
   if (urlPath.startsWith('/api/')) {
-    handleApi(req, res, urlPath).catch((err) => sendJson(res, 500, { error: err.message }));
+    handleApi(req, res, urlPath, session || { role: null, linkId: null }).catch((err) => sendJson(res, 500, { error: err.message }));
     return;
   }
+  // A user link (/join#token): the sign-in page reads the token from the address and signs
+  // in with it. The token is after the #, so it never reaches the server's logs.
+  if (urlPath === '/join') return serveFile(res, 'login.html');
   if (urlPath === feedMeter.DOWNLOAD_PATH && req.method === 'GET') {
     const data = feedMeter.zipFile();
     if (!data) return sendJson(res, 404, { error: 'The extension isn\'t shipped with this build' });
@@ -338,7 +483,7 @@ const server = http.createServer((req, res) => {
   serveFile(res, rel);
 });
 
-// Already running (a second double-click): hand over to that backend instead of failing.
+// Already running (started twice): hand over to that backend instead of failing.
 server.on('error', async (err) => {
   if (err.code !== 'EADDRINUSE') throw err;
   console.log(`The IXG Wall backend is already running on port ${PORT}.`);
@@ -355,19 +500,8 @@ server.on('error', async (err) => {
       console.error(`Port ${PORT} is taken by something else: ${e.message}`);
     }
   }
-  // A double-clicked exe's window closes on exit; leave the message up long enough to read.
-  setTimeout(() => process.exit(HOSTED ? 1 : 0), PACKAGED ? 4000 : 0);
+  process.exit(HOSTED ? 1 : 0);
 });
-
-// Same for a crash: show the error instead of a window that blinks shut.
-if (PACKAGED) {
-  process.on('uncaughtException', (err) => {
-    console.error(`\nIXG Wall stopped: ${err.stack || err}`);
-    console.error('Press Enter to close.');
-    process.stdin.resume();
-    process.stdin.once('data', () => process.exit(1));
-  });
-}
 
 server.listen(PORT, HOST, () => {
   console.log(`IXG Wall running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
@@ -377,8 +511,8 @@ server.listen(PORT, HOST, () => {
   } else if (auth.enabled) {
     console.log('Sign-in required (IXG_PASSWORD is set).');
   }
-  if (PACKAGED) console.log('Keep this window open while the wall runs. Closing it stops the backend.');
   telemetry.start();
+  credentials.start();
   youtube.start();
   ingest.start();
   if (OPEN) {

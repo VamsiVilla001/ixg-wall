@@ -1,18 +1,18 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IXG Wall</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='1' fill='%23131210'/%3E%3Cpath d='M3 4h4v3H3zM9 4h4v3H9zM3 9h4v3H3z' fill='%23f2f0eb'/%3E%3Cpath d='M9 9h4v3H9z' fill='%23f58138'/%3E%3C/svg%3E">
-  <link rel="preload" href="fonts/Manrope-500.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="fonts/JetBrainsMono-500.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%227.446%207.5%2055.108%2044.926%22%20role%3D%22img%22%20aria-label%3D%22IXG%22%3E%3Ctitle%3EIXG%20logo%3C%2Ftitle%3E%3Cstyle%3Epath%7Bfill%3A%23000%7D%40media%20(prefers-color-scheme%3Adark)%7Bpath%7Bfill%3A%23fff%7D%7D%3C%2Fstyle%3E%3Cpath%20d%3D%22M14.8931%207.5H7.44629V15H14.8931V7.5Z%22%2F%3E%3Cpath%20d%3D%22M14.8931%2018.7132H7.44629V41.2132H14.8931V18.7132Z%22%2F%3E%3Cpath%20d%3D%22M62.5538%2044.9265H47.6602V52.4265H62.5538V44.9265Z%22%2F%3E%3Cpath%20d%3D%22M40.2129%2018.7132V41.2132H62.5533V18.7132H40.2129ZM55.1065%2033.7132H47.6597V26.2132H55.1065V33.7132Z%22%2F%3E%3Cpath%20d%3D%22M27.553%2024.66L21.6485%2018.7132H16.3828V24.0165L22.2874%2029.9632L16.3828%2035.91V41.2132H21.6485C22.5972%2040.2577%2026.687%2036.1387%2027.553%2035.2665C28.4191%2036.1387%2032.5089%2040.2577%2033.4576%2041.2132H38.7232V35.91L32.8187%2029.9632L38.7232%2024.0165V18.7132H33.4576L27.553%2024.66Z%22%2F%3E%3C%2Fsvg%3E">
+  <link rel="preload" href="fonts/manrope.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-name">IXG</span><span class="brand-mark" aria-hidden="true"></span>
+      <img class="brand-logo" src="/ixg-logo.svg" alt="IXG">
       <span class="telemetry muted brand-sub">Wall</span>
     </div>
     <button id="session-toggle" class="session-chip" aria-expanded="false" aria-controls="session-panel">
@@ -47,12 +47,15 @@
     </div>
 
     <div class="wall-tabs" role="tablist" aria-label="Wall views">
-      <button id="feeds-tab" class="wall-tab" role="tab" aria-selected="true" aria-controls="feeds-panel" tabindex="0">Feeds <span class="tab-count" id="r-playing">0/0</span></button>
+      <button id="feeds-tab" class="wall-tab" role="tab" aria-selected="true" aria-controls="feeds-panel" tabindex="0">
+        Feeds <span class="tab-count" id="r-playing">0/0</span>
+        <span class="tab-ccv" id="r-ccv-wrap" hidden><span class="telemetry muted" id="r-audience-label">CCV</span><span id="r-ccv">—</span></span>
+      </button>
       <button id="wall-stats-tab" class="wall-tab" role="tab" aria-selected="false" aria-controls="wall-stats-panel" tabindex="-1">Wall stats</button>
     </div>
 
     <div class="global-actions">
-      <button id="add-toggle" class="btn btn-accent btn-sm" aria-expanded="false" aria-controls="add-panel">Add stream</button>
+      <button id="add-toggle" class="btn btn-accent btn-sm" aria-expanded="false" aria-controls="add-panel" data-admin-only>Add stream</button>
       <button id="resync-all" class="btn btn-outline btn-sm" title="Release build-up on every live feed: jump to its live edge, or to the wall's sync delay when synced">Jump live</button>
       <button id="reload-all" class="btn btn-outline btn-sm" title="Hard-refresh every player, staggered (releases buffers and memory)">Refresh all</button>
       <button id="clear-wall" class="btn btn-outline btn-sm" title="Stop and remove every feed from the saved wall" disabled>Clear wall</button>
@@ -90,10 +93,10 @@
       <div class="empty-body">
         <p class="telemetry muted">0 feeds · wall idle</p>
         <h1>No feeds in this session</h1>
-        <p>Press Add stream and paste YouTube live URLs, or a whole Slack or WhatsApp message with the links in it. Feeds start muted and catch up to their live edge on their own.</p>
+        <p data-admin-only>Press Add stream and paste YouTube live URLs, or a whole Slack or WhatsApp message with the links in it. Feeds start muted and catch up to their live edge on their own.</p>
+        <p data-user-only>The wall's admin adds the feeds. Earlier sessions with feeds are under Session.</p>
         <p class="telemetry muted">Click a feed to hear it · double-click its label to rename · earlier sessions are under Session</p>
       </div>
-      <div class="halftone-fade-b empty-ground" aria-hidden="true"></div>
     </div>
     </section>
     <section id="wall-stats-panel" class="wall-stats-panel" role="tabpanel" aria-labelledby="wall-stats-tab" tabindex="0" hidden>
@@ -101,18 +104,6 @@
         <h1>Wall stats</h1>
         <p>Live readings across the current session.</p>
       </div>
-      <section class="wall-alerts" aria-labelledby="wall-alerts-title">
-        <h2 id="wall-alerts-title">Alerts</h2>
-        <p class="telemetry muted alert-subtitle">Active now</p>
-        <p id="alerts-empty" class="hint" role="status">No active feed alerts.</p>
-        <ol id="active-alerts" class="log active-alerts" aria-label="Active feed alerts"></ol>
-        <div class="log-head">
-          <h3 class="telemetry muted">Message log</h3>
-          <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
-        </div>
-        <p class="hint">Newest first. Includes feed alerts, recoveries, and wall events from this browser session.</p>
-        <ol id="log" class="log wall-message-log" aria-label="Wall message log"></ol>
-      </section>
       <div class="wall-stats-grid">
       <div class="metric">
         <span class="metric-label">Delay <span class="tag">Measured</span></span>
@@ -134,29 +125,107 @@
         <span class="metric-value" id="r-getting">—</span>
         <p class="metric-description">Data received by the feeds, reported by Feed Meter.</p>
       </div>
-      <div class="metric" data-laptop-only id="r-bw-now-wrap">
-        <span class="metric-label">PC download <span class="tag">Measured</span></span>
+      <!-- Measured by the laptop backend. On the website the server isn't the screen, so they say N·A. -->
+      <div class="metric" id="r-bw-now-wrap">
+        <span class="metric-label">PC download <span class="tag" id="r-bw-now-tag">Measured</span></span>
         <span class="metric-value" id="r-bw-now">—</span>
-        <p class="metric-description">Download traffic across this computer, including other apps.</p>
+        <p class="metric-description" id="r-bw-now-desc">Download traffic across this computer, including other apps.</p>
       </div>
-      <div class="metric" data-laptop-only title="Whole-laptop CPU, measured by the backend">
-        <span class="metric-label">CPU <span class="tag">Measured</span></span>
+      <div class="metric" id="r-cpu-wrap" title="Whole-laptop CPU, measured by the backend">
+        <span class="metric-label">CPU <span class="tag" id="r-cpu-tag">Measured</span></span>
         <span class="metric-value" id="r-cpu">—</span>
-        <p class="metric-description">Processor use across this computer.</p>
-      </div>
-      <div class="metric" id="r-ccv-wrap" hidden>
-        <span class="metric-label">CCV <span class="tag">Measured</span></span>
-        <span class="metric-value" id="r-ccv">—</span>
-        <p class="metric-description">Viewers watching across the wall's feeds.</p>
+        <p class="metric-description" id="r-cpu-desc">Processor use across this computer.</p>
       </div>
       </div>
+      <section class="wall-alerts" aria-labelledby="wall-alerts-title">
+        <h2 id="wall-alerts-title">Alerts</h2>
+        <p class="telemetry muted alert-subtitle">Active now</p>
+        <p id="alerts-empty" class="hint" role="status">No active feed alerts.</p>
+        <ol id="active-alerts" class="log active-alerts" aria-label="Active feed alerts"></ol>
+        <div class="log-head">
+          <h3 class="telemetry muted">Message log</h3>
+          <button id="log-clear" class="btn btn-ghost btn-xs">Clear log</button>
+        </div>
+        <p class="hint">Newest first. Includes feed alerts, recoveries, and wall events from this browser session.</p>
+        <ol id="log" class="log wall-message-log" aria-label="Wall message log"></ol>
+      </section>
     </section>
   </main>
+
+  <!-- Wall timeline: moves every live feed to the same moment, by YouTube's stamp on the frame -->
+  <section id="transport" class="transport" aria-label="Wall timeline" hidden>
+    <button id="tl-play" class="btn btn-ghost btn-sm btn-square" aria-label="Pause every feed">
+      <svg class="i-pause" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 3h3v10H4zM9 3h3v10H9z"/></svg>
+      <svg class="i-play" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" hidden><path d="M4 2.5v11l9-5.5z"/></svg>
+    </button>
+    <button id="tl-back" class="btn btn-ghost btn-sm tl-step" title="Every feed back 10 s">−10s</button>
+    <button id="tl-fwd" class="btn btn-ghost btn-sm tl-step" title="Every feed forward 10 s">+10s</button>
+    <div class="tl-pos">
+      <span class="telemetry muted">Wall</span>
+      <span id="tl-behind" class="tl-behind">—</span>
+      <span id="tl-clock" class="tl-clock"></span>
+    </div>
+    <div id="tl-master" class="tl tl-master" role="slider" tabindex="0" aria-label="Wall timeline" aria-valuetext="Live">
+      <div class="tl-track"><div class="tl-gone"></div><div class="tl-fill"></div><div class="tl-knob"></div></div>
+      <span class="tl-tip" hidden></span>
+    </div>
+    <select id="tl-span" class="input select tl-span" aria-label="Timelines cover" title="How much of each stream the timelines show">
+      <option value="5">Last 5 min</option>
+      <option value="15">Last 15 min</option>
+      <option value="60">Last 1 h</option>
+      <option value="240">Last 4 h</option>
+      <option value="0">All</option>
+    </select>
+    <span id="tl-follow" class="telemetry muted tl-follow"></span>
+    <button id="tl-live" class="btn btn-outline btn-sm" title="Every feed back to live, including feeds moved on their own seek bars" disabled>Go live</button>
+    <!-- Layouts: the quick ones, and the rest (with the custom builder) under "…" -->
+    <div class="layout-bar" role="group" aria-label="Layout">
+      <span id="layout-quick" class="layout-quick"></span>
+      <button type="button" id="layout-more" class="layout-btn layout-more" aria-expanded="false" aria-controls="layout-panel" aria-label="More layouts" title="More layouts">
+        <svg viewBox="0 0 24 16" aria-hidden="true"><circle cx="7" cy="8" r="1.4"/><circle cx="12" cy="8" r="1.4"/><circle cx="17" cy="8" r="1.4"/></svg>
+      </button>
+    </div>
+    <div id="layout-panel" class="popover layout-panel" hidden aria-label="Layouts">
+      <div class="layout-grid" id="layout-grid"></div>
+      <div class="layout-panel-row">
+        <button type="button" id="layout-custom-use" class="layout-btn" title="Your custom layout" aria-label="Your custom layout" data-layout="custom" hidden></button>
+        <button type="button" id="layout-custom" class="btn btn-outline btn-sm layout-custom">Custom layout</button>
+      </div>
+      <div class="layout-panel-row">
+        <span class="telemetry muted">Grid</span>
+        <button type="button" id="layout-scroll" class="btn btn-ghost btn-xs" title="Fixed columns; scroll for more feeds (Settings → Layout sets the columns)">Columns, scroll</button>
+        <button type="button" id="layout-fit" class="btn btn-ghost btn-xs" title="Every feed on screen at once">Fit all</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Custom layout builder: drag across squares to draw boxes -->
+  <dialog id="layout-builder" class="dialog layout-builder" aria-labelledby="lb-title">
+    <form method="dialog" class="dialog-form">
+      <h2 id="lb-title">Custom layout</h2>
+      <p class="dialog-body">Drag across the squares to draw a box; click a box to remove it. Feeds fill the boxes biggest first.</p>
+      <div class="lb-sizes">
+        <label class="field"><span>Columns</span>
+          <select class="input select" id="lb-cols"><option>1</option><option>2</option><option>3</option><option>4</option><option>6</option></select>
+        </label>
+        <label class="field"><span>Rows</span>
+          <select class="input select" id="lb-rows"><option>1</option><option>2</option><option>3</option><option>4</option><option>6</option></select>
+        </label>
+        <button type="button" id="lb-clear" class="btn btn-ghost btn-sm">Clear</button>
+      </div>
+      <div class="lb-canvas" id="lb-canvas"></div>
+      <p class="hint" id="lb-count" role="status"></p>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn btn-outline" formnovalidate>Cancel</button>
+        <button id="lb-save" value="save" class="btn">Use this layout</button>
+      </div>
+    </form>
+  </dialog>
 
   <aside id="drawer" class="sheet" hidden aria-label="Settings">
     <div class="sheet-head">
       <div>
-        <p class="telemetry muted">Settings · applies instantly</p>
+        <p class="telemetry muted"><span id="role-chip" class="tag role-chip" hidden></span>Settings · applies instantly</p>
         <h2>Wall behaviour</h2>
       </div>
       <div class="sheet-head-actions">
@@ -166,6 +235,28 @@
     </div>
     <!-- Everything under the header scrolls; the header (and Close) stays put -->
     <div class="sheet-body">
+      <section class="sheet-section" id="links-settings" data-admin-only hidden>
+        <p class="telemetry muted section-title">User links</p>
+        <p class="hint">Whoever opens a user link signs in as a user, with no password. Users operate the wall: order, remove and rename feeds, switch sessions, change the layout and playback. Only admins add feeds or change a feed's link. A link works until you revoke it; revoking it signs out everyone who used it.</p>
+        <p class="hint">What a link ships is decided here, when you make it. With YouTube on, the wall's viewer counts, likes, broadcast state and ingest health reach the user, read with your API key and channel sign-ins; the user never sees the key, the OAuth client or the sign-ins, and has no YouTube settings at all. With it off, the user gets the players and the measured playback only.</p>
+        <p class="yt-status" id="links-off" data-tone="warn" hidden>This wall has no password, so anyone who opens it is already an admin and there's nothing for a link to grant. User links work on a wall with a password: the website, or <code>npm run dev:hosted</code> on this computer.</p>
+        <form class="key-form" id="link-form">
+          <label class="key-label" for="link-name">Who is it for?</label>
+          <input class="input" id="link-name" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. Production desk, Client review">
+          <div class="key-row">
+            <select class="input select link-days" id="link-days" aria-label="Link works for">
+              <option value="0">Until revoked</option>
+              <option value="1">1 day</option>
+              <option value="7">7 days</option>
+              <option value="30">30 days</option>
+            </select>
+            <button type="submit" class="btn btn-sm">Generate link</button>
+          </div>
+          <label class="meter-snooze link-youtube-row"><input type="checkbox" id="link-youtube" checked> Ship YouTube numbers and ingest health with this link</label>
+        </form>
+        <p class="form-error" id="link-error" role="alert" hidden></p>
+        <ul class="session-list link-list" id="link-list" aria-label="User links"></ul>
+      </section>
       <section class="sheet-section" id="layout-settings">
         <p class="telemetry muted section-title">Layout</p>
         <!-- To-scale miniature of the wall as configured; app.js draws it -->
@@ -176,6 +267,7 @@
           <select class="input select" data-setting="layoutMode">
             <option value="scroll">Fixed columns, scroll</option>
             <option value="fit">Fit all on screen</option>
+            <option value="preset">Preset layout (PIP)</option>
           </select>
         </label>
         <div data-layout-mode="scroll">
@@ -189,18 +281,13 @@
             </select>
           </label>
           <label class="field">
-            <span>On-screen feeds stream at</span>
-            <select class="input select" data-setting="feedQuality">
-              <option value="large">480p</option>
-              <option value="hd720">720p</option>
-              <option value="hd1080">1080p</option>
-            </select>
-          </label>
-          <label class="field">
             <span>Stats card width</span>
             <span class="field-unit"><input class="range" type="range" data-setting="cardPct" min="20" max="45" step="1"><output id="card-pct-out"></output></span>
           </label>
-          <p class="hint">Every tile keeps one size, so feeds and stats stay legible however many there are; scroll the wall for the rest. Only feeds on screen stream at this quality. One scrolled away keeps playing and stays monitored, and drops back to 480p after a minute. If the laptop or link can't keep up, the quality is held back as for priority feeds.</p>
+          <p class="hint">Every tile keeps one size, so feeds and stats stay legible. The page grows with the feed rows; scroll down for more. The header and playback controls stay visible.</p>
+        </div>
+        <div data-layout-mode="preset">
+          <p class="hint">Pick a layout from the bar under the wall: the six quick ones, or … for the rest and the custom layout builder. The layout applies to every feed: it repeats a screen at a time (2 × 2 with 10 feeds is three pages), and the wall scrolls a page at a time. Each page's first feed takes its biggest box; press Main on a feed to put it there, or drag a feed's name bar onto another to swap them.</p>
         </div>
         <div data-layout-mode="fit">
           <label class="field">
@@ -215,19 +302,28 @@
               <option value="6">6 columns</option>
             </select>
           </label>
-          <p class="hint">Every feed stays on screen, so tiles shrink as you add feeds; 20–30 feeds stream at 480p.</p>
+          <p class="hint">Every feed stays on screen, so tiles shrink as you add feeds.</p>
         </div>
+        <label class="field">
+          <span>Feeds stream at</span>
+          <select class="input select" data-setting="feedQuality">
+            <option value="large">480p</option>
+            <option value="hd720">720p</option>
+            <option value="hd1080">1080p</option>
+          </select>
+        </label>
+        <p class="hint">With the Feed Meter extension, every feed on the wall streams at this quality, whatever its size on screen: the extension sets it inside each player, as YouTube's own quality menu does, and changes apply within about 15 s without a refresh. A stream that doesn't offer it plays at the nearest level below. If the link or the laptop can't keep up, feeds are held at 480p, priority feeds last. Without the extension, YouTube sizes quality to the player, so only feeds on screen in scroll mode get this quality (one scrolled away drops to 480p after a minute), and lowering it refreshes them.</p>
         <label class="switch-row">
           <input class="switch" type="checkbox" role="switch" data-setting="showStats">
           <span>Show telemetry on feeds</span>
         </label>
       </section>
-      <section class="sheet-section" id="yt-settings">
+      <section class="sheet-section" id="yt-settings" data-admin-only>
         <p class="telemetry muted section-title">YouTube API</p>
         <form class="key-form" id="yt-key-form">
           <label class="key-label" for="yt-key-input">YouTube Data API key</label>
           <div class="key-row">
-            <input class="input" id="yt-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key, e.g. AIzaSy…">
+            <input class="input" id="yt-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a key, e.g. AIzaSy…">
             <button type="button" class="btn btn-outline btn-sm" id="yt-key-show" aria-pressed="false" title="Show or hide the key">Show</button>
             <button type="submit" class="btn btn-sm" id="yt-key-save">Save key</button>
           </div>
@@ -238,11 +334,12 @@
         </label>
         <p class="yt-status" id="yt-status" role="status"></p>
         <p class="hint">Adds live viewers, likes, views and comments to every feed, and a viewer history with peak, average, lowest and trend: open a feed's Stats for the full analytics. Also privacy, embedding, HD/SD and live chat, at no extra quota. The backend polls YouTube once per interval for every open window: every 30 s uses about 3,000 of the daily 10,000 quota units for up to 50 feeds.</p>
-        <p class="hint"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials. Restrict it to the YouTube Data API. The key stays on the server (secrets.json in its data folder) and is never sent back to a browser. For an address restriction, allow the server's public IP on a hosted wall, or http://localhost:8080/* on the laptop.</p>
+        <p class="hint">Any Google Cloud project's key works, whoever it belongs to. <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials and restrict it to the YouTube Data API. A new key is checked with YouTube before it replaces the saved one. It stays on the server (secrets.json in its data folder) and is never sent back to a browser. For an address restriction, allow the server's public IP on a hosted wall, or http://localhost:8080/* on the laptop.</p>
 
         <div class="ingest-settings">
           <p class="telemetry muted section-title">Channel sign-in · ingest health</p>
           <p class="yt-status" id="ingest-status" role="status"></p>
+          <ul class="session-list" id="ingest-channels" aria-label="Signed-in channels" hidden></ul>
           <form class="key-form" id="ingest-client-form" hidden>
             <label class="key-label" for="ingest-client-id">Google OAuth client ID</label>
             <input class="input" id="ingest-client-id" autocomplete="off" spellcheck="false" placeholder="…apps.googleusercontent.com">
@@ -254,16 +351,17 @@
           </form>
           <div class="perf-actions">
             <button type="button" id="ingest-signin" class="btn btn-sm" hidden>Sign in with Google</button>
-            <button type="button" id="ingest-signout" class="btn btn-outline btn-sm" hidden>Sign out</button>
+            <button type="button" id="ingest-client-check" class="btn btn-outline btn-sm" hidden>Check again</button>
             <button type="button" id="ingest-client-change" class="btn btn-ghost btn-sm" hidden>Change OAuth client</button>
           </div>
-          <p class="hint">Sign in with the Google account that owns the channel the feeds stream to (read-only). The wall then shows how each feed's encoder stream arrives at YouTube: health (good, ok, bad), resolution, frame rate and YouTube's warnings, refreshed with the numbers above.</p>
-          <p class="hint">One-time setup in Google Cloud: under Credentials, create an OAuth client ID of type Web application, add this authorised redirect URI, then paste its ID and secret here: <code id="ingest-redirect"></code></p>
+          <p class="hint">Sign in with the Google account of each channel the feeds stream to (read-only). Several channels can be signed in at once: each feed's ingest comes from the channel that owns it. The wall then shows how each feed's encoder stream arrives at YouTube: health (good, ok, bad), resolution, frame rate and YouTube's warnings, refreshed with the numbers above.</p>
+          <p class="hint">One-time setup, in anyone's Google Cloud project: under Credentials, create an OAuth client ID of type Web application, add this authorised redirect URI, then paste its ID and secret here. The client is checked with Google before it's saved. <code id="ingest-redirect"></code></p>
         </div>
       </section>
       <section class="sheet-section">
         <div class="section-head"><p class="telemetry muted" id="perf-title">Laptop &amp; rendering</p><span class="tag">Measured</span></div>
         <dl class="kv" id="perf-kv"></dl>
+        <button type="button" class="btn btn-outline btn-sm meter-install" id="meter-install" hidden>Install Feed Meter</button>
         <label class="field" data-laptop-only>
           <span>Video decoding</span>
           <select class="input select" id="decode-mode">
@@ -308,7 +406,24 @@
           <span>Hard-refresh each feed every</span>
           <span class="field-unit"><input class="input input-num" type="number" data-setting="hardReloadMin" min="0" max="1440" step="1"> min</span>
         </label>
-        <p class="hint">Destroys and recreates the player, releasing everything it holds in this PC's memory. Refreshes are staggered so the wall never blanks at once. 0 turns this off.</p>
+        <p class="hint">Off (0) by default: a feed that plays is left alone, and the wall refreshes a player only when it is stuck or has failed. Set a time to destroy and recreate every player on a schedule, which clears a degraded player and its buffer. It doesn't give memory back on its own: the new player loads into the same browser process (see Memory offload). Refreshes are staggered so the wall never blanks at once.</p>
+      </section>
+      <section class="sheet-section">
+        <p class="telemetry muted section-title">Memory offload</p>
+        <p class="hint">The players of each YouTube site (youtube.com and youtube-nocookie.com) share one browser process, which keeps growing for as long as it runs: this is the "High memory usage" Chrome reports on the wall tab. Refreshing a player doesn't shrink it; only ending the process does. An offload moves the feeds one at a time to the other site, lets Chrome end the emptied process, then does the same the other way. Every feed restarts twice, each like a normal refresh, never more than one at a time, and both processes start fresh.</p>
+        <label class="field" data-laptop-only data-admin-only>
+          <span>Offload when the wall tab passes</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="memLimitMB" min="0" max="16000" step="50"> MB</span>
+        </label>
+        <p class="hint" data-laptop-only data-admin-only>In the managed wall window, the backend measures the tab (the page and its players) from Windows, as Chrome's Task Manager counts it. If an offload can't get it under the limit, the feeds need that much: the event log says so, and the wall waits 30 min before trying again. 0 turns this off.</p>
+        <label class="field" data-admin-only>
+          <span>Where memory can't be measured, offload every</span>
+          <span class="field-unit"><input class="input input-num" type="number" data-setting="offloadEveryMin" min="0" max="1440" step="5"> min</span>
+        </label>
+        <p class="hint" data-admin-only>A web page can't read its own tab's memory, so in an ordinary browser tab, or on a hosted wall, the wall offloads on this timer instead. 0 turns this off.</p>
+        <div class="perf-actions">
+          <button type="button" id="offload-now" class="btn btn-outline btn-sm">Offload memory now</button>
+        </div>
       </section>
       <section class="sheet-section" id="terms">
         <p class="telemetry muted section-title">What the numbers mean</p>
@@ -353,7 +468,6 @@
         <p class="hint">Feeds load in order, priority first, so startup and refreshes never hit the link all at once. Standard feeds stream at YouTube's embed floor of 480p; YouTube ignores requests to go lower.</p>
       </section>
     </div>
-    <div class="halftone-fade-b sheet-ground" aria-hidden="true"></div>
   </aside>
 
   <aside id="feed-sheet" class="sheet feed-sheet" hidden aria-label="Feed stats">
@@ -367,9 +481,11 @@
     </div>
     <div class="feed-actions">
       <button id="fs-nerds" class="btn btn-outline btn-sm" aria-pressed="false" title="Enlarge this feed and open YouTube's own Stats for nerds: connection speed, dropped frames, codecs, latency mode">Show YouTube stats</button>
-      <button id="fs-link" class="btn btn-outline btn-sm" title="Point this feed at a different YouTube link, keeping its place, label and priority">Change link</button>
+      <button id="fs-link" class="btn btn-outline btn-sm" title="Point this feed at a different YouTube link, keeping its place, label and priority" data-admin-only>Change link</button>
       <a id="fs-open" class="btn btn-ghost btn-sm" target="_blank" rel="noopener">Open on YouTube</a>
+      <button id="fs-shot" class="btn btn-outline btn-sm" title="Capture Source Screenshot: opens this feed's own YouTube page in a window behind the wall, waits for its title, channel, LIVE state and watching-now count, saves the block as a PNG in Downloads/IXG-Wall/Screenshots, and closes the window">Capture source screenshot</button>
     </div>
+    <p class="fs-shot-status" id="fs-shot-status" role="status" hidden></p>
     <div class="feed-body">
       <section class="sheet-section">
         <div class="section-head"><p class="telemetry muted">Feed health</p><span class="tag">Measured</span></div>
@@ -401,10 +517,10 @@
       </section>
       <section class="sheet-section">
         <div class="section-head"><p class="telemetry muted">YouTube analytics</p><span class="tag" id="fs-aud-tag">N·A</span></div>
-        <form class="key-form" id="fs-key-form" hidden>
+        <form class="key-form" id="fs-key-form" data-admin-only hidden>
           <label class="field field-stack">
             <span>YouTube Data API key</span>
-            <input class="input" type="password" id="fs-key" autocomplete="off" spellcheck="false" placeholder="Paste your key, e.g. AIzaSy…">
+            <input class="input" type="password" id="fs-key" autocomplete="off" spellcheck="false" placeholder="Paste a key, e.g. AIzaSy…">
           </label>
           <button class="btn btn-sm" type="submit">Save key</button>
         </form>
@@ -471,13 +587,24 @@
     <div class="tile">
       <div class="screen">
         <div class="stage">
+          <div class="audio-meter" role="img" aria-label="Audio levels unavailable" title="Install or update the IXG Wall Feed Meter for audio levels">
+            <span class="audio-meter-heading">Audio</span>
+            <div class="audio-meter-bars" aria-hidden="true">
+              <span class="audio-meter-scale"><span>0</span><span>−18</span><span>−36</span><span>−60</span></span>
+              <div class="audio-channel"><div class="audio-fill"></div><span class="audio-peak"></span></div>
+              <div class="audio-channel"><div class="audio-fill"></div><span class="audio-peak"></span></div>
+            </div>
+            <span class="audio-meter-channels" aria-hidden="true">L&nbsp; R</span>
+            <span class="audio-meter-state">N/A</span>
+          </div>
           <div class="frame"></div>
           <div class="shield" title="Click to hear this feed (mutes the others)"></div>
           <span class="tile-actions">
+            <button class="btn btn-xs btn-overlay act-main" data-act="main" title="Put this feed in the layout's biggest box, trading places with the feed there">Main</button>
             <button class="btn btn-xs btn-overlay" data-act="priority" aria-pressed="false" title="Priority feeds load first and stream at higher quality">Priority</button>
-            <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge">Jump live</button>
+            <button class="btn btn-xs btn-overlay" data-act="resync" title="Jump to live edge, or back to the wall timeline if it's moved back">Jump live</button>
             <button class="btn btn-xs btn-overlay" data-act="reload" title="Hard-refresh this player">Refresh</button>
-            <button class="btn btn-xs btn-overlay" data-act="link" title="Point this feed at a different YouTube link, keeping its place, label and priority">Change link</button>
+            <button class="btn btn-xs btn-overlay" data-act="link" title="Point this feed at a different YouTube link, keeping its place, label and priority" data-admin-only>Change link</button>
             <button class="btn btn-xs btn-overlay btn-icon" data-act="full" title="Fullscreen" aria-label="Fullscreen">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>
             </button>
@@ -487,7 +614,7 @@
           </span>
         </div>
         <!-- Side panel: fills the pillarbox space when the tile is wider than its 16:9 video -->
-        <!-- SKWAD Metric blocks: mono label, mono value, provenance. When the card is too short,
+        <!-- IXG metric blocks: UI label, tabular figure, provenance. When the card is too short,
              blocks are hidden whole, lowest data-drop first. -->
         <aside class="side" aria-label="Feed status">
           <!-- Status tab: the state in the display voice, then live health -->
@@ -514,7 +641,7 @@
           <section class="side-sec side-yt" data-drop="11">
             <div class="side-head"><span class="side-title">YouTube</span><span class="prov side-yt-tag">N·A</span></div>
             <dl class="m-grid">
-              <div class="m m-hero"><dt>Watching now</dt><dd class="m-lg"><span data-yt="viewers">—</span><span class="m-delta" data-yt="trend"></span></dd><span class="prov" data-yt="viewersProv"></span></div>
+              <div class="m m-hero"><dt data-yt="audienceLabel">CCV</dt><dd class="m-lg"><span data-yt="viewers">—</span><span class="m-delta" data-yt="trend"></span></dd><span class="prov" data-yt="viewersProv"></span></div>
               <div class="m" data-drop="7.5" title="Most viewers since the backend started tracking this feed"><dt>Peak</dt><dd data-yt="peak">—</dd></div>
               <div class="m" data-drop="9.5"><dt>Likes</dt><dd data-yt="likes">—</dd></div>
               <div class="m" data-drop="9"><dt>Views</dt><dd data-yt="views">—</dd></div>
@@ -529,9 +656,15 @@
         </aside>
       </div>
       <div class="info">
+        <!-- This feed's YouTube seek bar, along the top edge of the bar under the video -->
+        <div class="tl tile-tl" hidden>
+          <div class="tl-track"><div class="tl-fill"></div><div class="tl-knob"></div></div>
+          <span class="tl-tip" hidden></span>
+        </div>
         <div class="info-head">
           <span class="status"><span class="status-dot"></span><span class="status-text"></span></span>
           <span class="label" title="Double-click to rename"></span>
+          <span class="tag shift-tag" hidden></span>
           <span class="tag prio-tag">Priority</span>
           <span class="tag tag-accent audio-tag">Audio</span>
           <button class="btn btn-xs btn-ghost stats-btn" data-act="stats" title="Feed health, network and YouTube stats">Stats</button>

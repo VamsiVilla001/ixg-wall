@@ -186,4 +186,4 @@ class WallBrowser {
   }
 }
 
-module.exports = { WallBrowser, DECODE_MODES };
+module.exports = { WallBrowser, DECODE_MODES, PROFILE_DIR };

@@ -1,7 +1,8 @@
-// Server-side secrets: the YouTube Data API key, the Google sign-in (OAuth client and the
-// channel's refresh token) and the key that signs session cookies.
+// Server-side secrets: the YouTube Data API key, the Google OAuth client, each signed-in
+// channel's refresh token, and the key that signs session cookies. This is only storage;
+// google-credentials.js decides what goes in.
 // Kept apart from the wall (feeds and settings), which every signed-in page downloads, so
-// the API key never reaches a browser.
+// none of it reaches a browser.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -23,10 +24,18 @@ class Secrets {
     } catch {
       // first run: nothing saved yet
     }
+    let changed = false;
     if (typeof this.data.sessionSecret !== 'string' || this.data.sessionSecret.length < 64) {
       this.data.sessionSecret = crypto.randomBytes(32).toString('hex');
-      this.write();
+      changed = true;
     }
+    // Before several channels could sign in, there was one oauthToken.
+    if (this.data.oauthToken) {
+      if (!Array.isArray(this.data.channels)) this.data.channels = [this.data.oauthToken];
+      delete this.data.oauthToken;
+      changed = true;
+    }
+    if (changed) this.write();
   }
 
   write() {
@@ -76,24 +85,37 @@ class Secrets {
     return { set: !!c, source: this.envOauthClient ? 'env' : c ? 'saved' : null, clientId: c?.clientId || '' };
   }
 
-  // False when the environment manages the client. Changing it signs the channel out.
+  // False when the environment manages the client.
   setOauthClient(client) {
     if (this.envOauthClient) return false;
     if (client) this.data.oauthClient = { clientId: client.clientId, clientSecret: client.clientSecret };
     else delete this.data.oauthClient;
-    delete this.data.oauthToken;
     this.write();
     return true;
   }
 
-  // { refreshToken, channelId, channelTitle, savedAt } once a channel has signed in.
-  oauthToken() {
-    return this.data.oauthToken || null;
+  // One { refreshToken, channelId, channelTitle, savedAt } per signed-in channel. A channel
+  // whose sign-in expired keeps its entry without a refreshToken, so Settings can ask for
+  // it again.
+  channelTokens() {
+    return Array.isArray(this.data.channels) ? this.data.channels : [];
   }
 
-  setOauthToken(token) {
-    if (token) this.data.oauthToken = token;
-    else delete this.data.oauthToken;
+  // Adds a channel, or renews one that signed in before.
+  saveChannelToken(token) {
+    this.data.channels = [...this.channelTokens().filter((t) => t.channelId !== token.channelId), token];
+    this.write();
+  }
+
+  removeChannelToken(channelId) {
+    this.data.channels = this.channelTokens().filter((t) => t.channelId !== channelId);
+    this.write();
+  }
+
+  expireChannelToken(channelId) {
+    const t = this.channelTokens().find((x) => x.channelId === channelId);
+    if (!t?.refreshToken) return;
+    delete t.refreshToken;
     this.write();
   }
 }

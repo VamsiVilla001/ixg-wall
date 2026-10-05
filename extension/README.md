@@ -11,8 +11,27 @@ The wall page can't see inside its YouTube players, because each one is an isola
 | **Resolution, fps, formats** | the video element, and YouTube's format codes |
 | **Latency mode** | Normal / Low / Ultra-low, as YouTube's player reports it |
 | **Dropped frames** | the video element's playback quality counters |
+| **Stereo audio** (dBFS) | decoded audio from `captureStream()`, analysed locally at 10 updates per second; RMS bars and sample-peak markers, −60 to 0 dBFS |
+
+Version 1.2.0 adds an **L/R audio meter to the left of each video**. It measures audio before the player's mute and volume controls, so selecting one feed to hear does not stop metering the others. A mono track is displayed on both bars when the browser identifies it as mono. The analysis branch is silent and never changes player volume, mute or playback.
+
+The rail shows **N/A** without compatible readings, **Enable** when the browser suspends its audio analyser, and **Idle / End** when playback pauses or the broadcast ends. For Enable, interact with the YouTube player, or use the managed wall window, which already permits autoplay. Browser or cross-origin restrictions can make readings unavailable; the wall never substitutes invented levels. Reload the updated extension in `chrome://extensions` (or `edge://extensions`) and refresh the wall to use it.
+
+Since 1.1.0 it also **sets each player's quality** to the wall's "Feeds stream at" setting (480p, 720p or 1080p), the way YouTube's own quality menu does. The wall page can't do this itself: embedded players ignore quality requests from the page and size quality to the player. With the extension, every feed streams at the chosen quality whatever its size on screen, and changes apply within about 15 s without a refresh.
 
 With it, the wall's header shows **Feeds need** (all bitrates added up) and **Feeds getting** (all data received), both measured. On the laptop it also shows **PC download** (the whole computer), so the difference reveals other traffic on the PC. Without it, "Feeds need" falls back to typical bitrates, marked Estimated.
+
+## Capture Source Screenshot (1.3.0)
+
+Evidence of a feed from its **own YouTube page**, not from the wall: the player, the title, the channel name, the LIVE badge and YouTube's own **"N watching now"** count, as YouTube shows them. Open a feed's stats sheet (**Stats** on the tile) and press **Capture source screenshot**.
+
+What happens: the wall asks the extension through one of its players (`courier.js`, since a web page can't talk to an extension's worker directly). The worker (`capture.js`) opens the feed's watch page in a small muted window **behind** the wall, waits for the page to load, then for its player, title and channel, then for the watching-now count (up to 20 s, since it renders late), lets it settle, screenshots the window, crops the block that holds those parts, saves the PNG and closes the window. The sheet shows each step (`Opening source…`, `Waiting for source data…`, `Waiting for CCV…`, `Capturing…`, `Screenshot saved: …`) and the reason when it fails (`Source video unavailable: …`, `Source page failed to load`, `Viewer count could not be detected: saved as CCV-NA`).
+
+- **Files:** `Downloads/IXG-Wall/Screenshots/{Account}_{Title}_{CCV}CCV_{YYYY-MM-DD_HHmmss}.png`, e.g. `KRAFTON_INDIA_ESPORTS_BGMI_FINALS_124382CCV_2026-10-05_205215.png`; `CCV-NA` when YouTube shows no count (a recording, or a count that never appeared). Characters Windows refuses are dropped. Nothing is drawn onto the picture: the count in the file is the one YouTube displayed.
+- **One at a time.** A second press while one runs is refused, on the page and in the worker.
+- **The window stays behind the wall.** If the browser won't draw it there, it's brought forward for the shot and the wall gets focus straight back. Never more than one window is left open: it closes on success and on failure.
+- **Platforms:** YouTube today (`source-youtube.js`: where the parts are, what to wait for). Another platform is one more such file; the workflow doesn't change. Storage is `Storage` in `capture.js`: the browser's Downloads folder today, with room for a native helper that writes into a production folder.
+- **Permissions** this needs, all new in 1.3.0: `tabs` (open, mute and close the source window), `scripting` (read the source page), `downloads`, and the `<all_urls>` host permission, because Chrome lets an extension screenshot a tab only with that or with a click on the extension's own icon, which the wall has no way to give. Chrome words it as "read and change all your data on all websites"; the extension reads the YouTube watch page it opened and nothing else (its content scripts still run only inside embedded players).
 
 ## Install: the wall asks for it
 
@@ -41,9 +60,10 @@ The matching private key isn't in the project. It lives on the development PC at
 
 ## Privacy
 
-- **Where it runs:** only inside YouTube embedded players (`youtube.com/embed/*`, `youtube-nocookie.com/embed/*`). It doesn't run on YouTube.com itself or on any other site.
+- **Where it runs:** inside YouTube embedded players (`youtube.com/embed/*`, `youtube-nocookie.com/embed/*`), and, only while a screenshot is being captured, in the watch page it opened for that (`www.youtube.com`). Not on any other site.
 - **Who it reports to:** only a page that asks first. The wall sends `{ type: 'ixg-wall-hello' }` into its own players, and the reports go back to that page's origin alone.
-- **What it reads:** sizes and timings of the video downloads. It doesn't read video content, cookies or account data, and it stores and sends nothing anywhere else.
+- **Who can set the quality:** only that same page (`{ type: 'ixg-wall-quality', quality }`), and only to one of YouTube's quality levels.
+- **What it reads:** sizes and timings of the video downloads, player telemetry, and decoded audio samples for local level analysis. Only RMS and sample-peak levels are reported to the wall; raw audio is never recorded, stored or sent. It doesn't read cookies or account data, and reports go nowhere else.
 
 ## Maintenance
 
