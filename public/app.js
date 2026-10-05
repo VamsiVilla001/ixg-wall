@@ -1967,7 +1967,9 @@
     // the measured readings, then the audience numbers YouTube reports (Data API key needed).
     renderAudio(now = Date.now()) {
       const fresh = this.audio && now - this.audio.at < 1500 ? this.audio : null;
-      const ended = !!this.broadcastEnded();
+      // A completed broadcast can still have an actively playing recording.
+      // The player report describes current audio; broadcast status describes its live run.
+      const ended = !!this.broadcastEnded() && !this.mounted;
       const state = ended ? 'ended' : fresh?.status || 'unavailable';
       const channels = state === 'ok' ? fresh.channels : [];
       this.$audio.dataset.state = state;
@@ -1981,7 +1983,7 @@
       setText(this.$audioState, peak == null ? labels[state] || 'N/A' : peak <= -60 ? '<−60' : peak.toFixed(0));
       const detail = channels.length
         ? `Audio levels (dBFS, before playback mute): L ${channels[0].rmsDb.toFixed(1)} RMS / ${channels[0].peakDb.toFixed(1)} peak; R ${channels[1].rmsDb.toFixed(1)} RMS / ${channels[1].peakDb.toFixed(1)} peak`
-        : ended ? 'Broadcast ended: no live audio levels'
+        : state === 'ended' ? 'Broadcast ended and no player is running'
           : state === 'suspended' ? 'Audio analyser paused by the browser. Interact with the YouTube player to enable it, or use the managed wall window.'
             : state === 'idle' ? 'Player paused: no current audio levels'
               : state === 'no-audio' ? 'No audio track available in this player'
@@ -4386,6 +4388,7 @@
     const audience = wallAudience(list);
     $('#r-ccv-wrap').hidden = !hasYtKey() || !list.length;
     setText($('#r-audience-label'), audience.label);
+    $('#r-ccv-wrap').dataset.kind = audience.label === 'Views' ? 'views' : 'ccv';
     // Compact (1.7M, 20K) beside the tabs; the exact count is in the tooltip.
     setText($('#r-ccv'), audience.value == null ? '—' : audience.value < 1000 ? String(audience.value) : compactNumber.format(audience.value));
     const total = ytState?.total;

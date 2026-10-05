@@ -235,6 +235,8 @@ code { font-family: var(--font-mono); }
 .wall-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: -4px; }
 .tab-count { font: 500 11px/1 var(--font-mono); }
 .tab-ccv { display: inline-flex; align-items: center; gap: 6px; padding-left: 8px; border-left: 1px solid var(--border); font: 500 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+/* Total views of ended broadcasts: bright green, apart from a live CCV */
+.tab-ccv[data-kind="views"] #r-ccv { color: var(--ixg-on-air-text); }
 .tab-count[data-tone="bad"] { color: var(--danger-on-dark); }
 .tab-count[data-tone="warn"] { color: var(--warn-on-dark); }
 .metric {

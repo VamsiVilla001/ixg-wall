@@ -93,6 +93,7 @@ test('stale or ended feeds clear the displayed bars instead of keeping the last 
   const values = [new Map(), new Map()];
   const tile = {
     stream: { label: 'Hindi' }, audio: { at: now, status: 'ok', channels: [{ rmsDb: -18, peakDb: -6 }, { rmsDb: -30, peakDb: -12 }] },
+    mounted: true,
     $audio: { dataset: {}, setAttribute() {} }, $audioState: {},
     $audioBars: values.map((v) => ({ style: { setProperty: (k, value) => v.set(k, value) } })),
     broadcastEnded: () => null,
@@ -106,6 +107,13 @@ test('stale or ended feeds clear the displayed bars instead of keeping the last 
   assert.equal(tile.$audio.dataset.state, 'unavailable');
   assert.equal(values[0].get('--audio-level'), '0');
   tile.broadcastEnded = () => ({ at: 1 });
+  context.render.call(tile, now);
+  assert.equal(tile.$audio.dataset.state, 'ok', 'a playing recording keeps its audio readings');
+  assert.equal(values[0].get('--audio-level'), '0.7');
+  tile.audio = { at: now, status: 'idle', channels: [] };
+  context.render.call(tile, now);
+  assert.equal(tile.$audio.dataset.state, 'idle', 'a paused recording reports its player state');
+  tile.mounted = false;
   context.render.call(tile, now);
   assert.equal(tile.$audioState.textContent, 'End');
   assert.equal(values[1].get('--audio-peak'), '0');
