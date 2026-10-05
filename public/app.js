@@ -202,6 +202,22 @@
     return units;
   }
 
+  // A later page with fewer feeds than an even grid's boxes: m feeds in boxes of the grid's
+  // own size [x, y, w, h], row after row; the last row's boxes widen to fill the width, and
+  // the rows below the last are left out, so the page is only as tall as its feeds.
+  function packUnits([, , w, h], m) {
+    const cols = Math.max(1, Math.round(LAYOUT_UNITS / w));
+    const units = [];
+    for (let r = 0, y = 0; r * cols < m; r++, y += h) {
+      const count = Math.min(cols, m - r * cols);
+      for (let c = 0; c < count; c++) {
+        const x0 = Math.round((c * LAYOUT_UNITS) / count);
+        units.push([x0, y, Math.round(((c + 1) * LAYOUT_UNITS) / count) - x0, h]);
+      }
+    }
+    return units;
+  }
+
   // Presets whose boxes are all the same size (2 × 2, 3 × 3 …), as opposed to PIP shapes.
   const evenLayout = (units) => units.every(([, , w, h]) => w === units[0][2] && h === units[0][3]);
 
@@ -3669,22 +3685,28 @@
   function computeLayout(W, H, n) {
     if (settings.layoutMode === 'scroll') return scrollGeometry(W, H, n);
     // A preset: its boxes fill the screen on a 12 × 12 grid, and it repeats a screen at a
-    // time for every feed: with 2 × 2 and 10 feeds, three pages. An even grid's last page
-    // spreads its leftover feeds over the whole page (the third page: 2 side by side, full
-    // height); a PIP shape keeps its boxes, empty ones included, since the shape is the point.
+    // time for every feed: with 2 × 2 and 10 feeds, three pages. A part-filled last page is
+    // as tall as its feeds need, not a whole screen: an even grid keeps its box size and
+    // widens its last row (the third page above: 2 side by side, half a screen high); a PIP
+    // shape keeps its first boxes, cut below the lowest. A wall that is one part-filled page
+    // spreads its feeds over the screen instead, since there's nothing below to scroll to.
     if (settings.layoutMode === 'preset') {
       const units = layoutUnits(activeLayout());
+      const pages = Math.max(1, Math.ceil(n / units.length));
       const leftover = n % units.length;
-      const tail = leftover && evenLayout(units) ? fillUnits(leftover) : null;
+      const even = evenLayout(units);
+      const tail = !leftover ? null
+        : pages === 1 ? (even ? fillUnits(leftover) : null)
+          : even ? packUnits(units[0], leftover) : units.slice(0, leftover);
+      const lastRows = tail && pages > 1 ? Math.max(...tail.map(([, y, , h]) => y + h)) : LAYOUT_UNITS;
       const unitW = (W - (LAYOUT_UNITS - 1) * GRID_GAP_PX) / LAYOUT_UNITS;
       const unitH = (H - (LAYOUT_UNITS - 1) * GRID_GAP_PX) / LAYOUT_UNITS;
       const boxes = units.map(([x, y, w, h]) => ({
         x: x * (unitW + GRID_GAP_PX), y: y * (unitH + GRID_GAP_PX), w: w * unitW + (w - 1) * GRID_GAP_PX, h: h * unitH + (h - 1) * GRID_GAP_PX,
       }));
-      const pages = Math.max(1, Math.ceil(n / boxes.length));
-      const totalRows = LAYOUT_UNITS * pages;
+      const totalRows = LAYOUT_UNITS * (pages - 1) + lastRows;
       const contentH = totalRows * unitH + (totalRows - 1) * GRID_GAP_PX;
-      return { mode: 'preset', units, tail, boxes, unitH, pages, contentH, onScreen: Math.min(n, boxes.length) };
+      return { mode: 'preset', units, tail, boxes, unitH, pages, totalRows, contentH, onScreen: Math.min(n, boxes.length) };
     }
     let cols = 1;
     if (settings.layout !== 'auto') {
@@ -3731,7 +3753,7 @@
     $grid.classList.toggle('preset', L.mode === 'preset');
     if (L.mode === 'preset') {
       $grid.style.setProperty('--unit-h', `${L.unitH}px`);
-      $grid.style.setProperty('--units-total', String(LAYOUT_UNITS * L.pages));
+      $grid.style.setProperty('--units-total', String(L.totalRows));
     } else {
       $grid.style.setProperty('--cols', L.cols);
       $grid.style.setProperty('--rows', L.rows);

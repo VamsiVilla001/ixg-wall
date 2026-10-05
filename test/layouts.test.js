@@ -10,9 +10,10 @@ const from = source.indexOf('  const STORAGE_KEY');
 const to = source.indexOf('  // State + persistence', from);
 assert.ok(from >= 0 && to > from);
 const context = vm.createContext({});
-vm.runInContext(`${source.slice(from, to)}; globalThis.L = { LAYOUT_PRESETS, LAYOUT_UNITS, layoutUnits, fillUnits, evenLayout, validCustomLayout, DEFAULT_SETTINGS };`, context);
+vm.runInContext(`${source.slice(from, to)}; globalThis.L = { LAYOUT_PRESETS, LAYOUT_UNITS, layoutUnits, fillUnits, packUnits, evenLayout, validCustomLayout, DEFAULT_SETTINGS };`, context);
 const { LAYOUT_PRESETS, LAYOUT_UNITS, validCustomLayout, DEFAULT_SETTINGS, evenLayout } = context.L;
 const fillUnits = (m) => JSON.parse(JSON.stringify(context.L.fillUnits(m)));
+const packUnits = (box, m) => JSON.parse(JSON.stringify(context.L.packUnits(box, m)));
 // Plain arrays: ones made inside the sandbox don't compare equal to this file's.
 const layoutUnits = (layout) => JSON.parse(JSON.stringify(context.L.layoutUnits(layout)));
 
@@ -63,6 +64,26 @@ test('a part-filled last page spreads 1–15 leftover feeds over the whole page,
   assert.deepEqual(fillUnits(2), [[0, 0, 6, 12], [6, 0, 6, 12]], 'two side by side, full height');
   assert.deepEqual(fillUnits(3), [[0, 0, 6, 6], [6, 0, 6, 6], [0, 6, 12, 6]], 'two over one');
   assert.deepEqual(fillUnits(5), [[0, 0, 4, 6], [4, 0, 4, 6], [8, 0, 4, 6], [0, 6, 6, 6], [6, 6, 6, 6]], 'three over two');
+});
+
+test('a later part-filled page keeps the grid\'s box size and is only as tall as its feeds', () => {
+  // 2 × 2 (boxes 6 × 6): 2 leftover sit side by side, half a page high; 1 widens to the full width.
+  assert.deepEqual(packUnits([0, 0, 6, 6], 2), [[0, 0, 6, 6], [6, 0, 6, 6]]);
+  assert.deepEqual(packUnits([0, 0, 6, 6], 3), [[0, 0, 6, 6], [6, 0, 6, 6], [0, 6, 12, 6]]);
+  assert.deepEqual(packUnits([0, 0, 6, 6], 1), [[0, 0, 12, 6]]);
+  // 3 × 3 (boxes 4 × 4) with 5: three over two, eight of twelve rows.
+  assert.deepEqual(packUnits([0, 0, 4, 4], 5), [[0, 0, 4, 4], [4, 0, 4, 4], [8, 0, 4, 4], [0, 4, 6, 4], [6, 4, 6, 4]]);
+  // Every count on every even grid: whole squares, no overlap, full rows, nothing below the last.
+  for (const p of LAYOUT_PRESETS.filter((x) => evenLayout(layoutUnits(x)))) {
+    const units = layoutUnits(p);
+    for (let m = 1; m < units.length; m++) {
+      const packed = packUnits(units[0], m);
+      assert.equal(packed.length, m, p.id);
+      const rows = Math.max(...packed.map(([, y, , h]) => y + h));
+      assert.ok(rows <= LAYOUT_UNITS, p.id);
+      assert.equal(cover(packed), LAYOUT_UNITS * rows, `${p.id} with ${m} leaves a gap`);
+    }
+  }
 });
 
 test('only even grids fill their last page; PIP shapes keep their boxes', () => {

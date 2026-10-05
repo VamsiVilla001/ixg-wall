@@ -71,7 +71,9 @@ test('preset pages remain viewport sized after the document grows and repeated r
   const threePages = w.feeds(10);
   assert.equal(threePages.pages, 3);
   assert.equal(threePages.unitH, onePage.unitH);
-  assert.ok(threePages.contentH > onePage.contentH * 3);
+  // 4 + 4 + 2: the last page is only the one row its two feeds need.
+  assert.equal(threePages.totalRows, 30);
+  assert.ok(threePages.contentH > onePage.contentH * 2.5 && threePages.contentH < onePage.contentH * 3);
   for (let i = 0; i < 4; i++) {
     w.updateLayout();
     assert.equal(w.height(), threePages.contentH, 'growing grid must not feed back into page geometry');

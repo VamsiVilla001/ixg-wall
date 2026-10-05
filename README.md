@@ -46,7 +46,7 @@ The bar at the bottom right of the wall picks how feeds are arranged.
 - **"…"** opens 28 more, including one big beside two, a big feed over a strip, 3 × 3, two big over eight and 4 × 4.
   - **Custom layout** opens a builder: pick a grid of up to 6 × 6, then drag across squares to draw each box.
   - **Columns, scroll** and **Fit all** go back to the plain grids.
-- **A layout applies to every feed.** It repeats one screen-high page at a time, and the wall scrolls a page at a time. For example, 2 × 2 with 10 feeds gives three pages: 4, 4 and 2. On an even grid (2 × 2, 3 × 3 …) the last page spreads its leftover feeds over the whole page, so those 2 sit side by side at full height and 3 feeds in 2 × 2 are 2 over 1. A PIP shape (one big beside two, and so on) keeps its boxes, empty ones included.
+- **A layout applies to every feed.** It repeats one screen-high page at a time, and the wall scrolls a page at a time. For example, 2 × 2 with 10 feeds gives three pages: 4, 4 and 2. A part-filled last page is only as tall as its feeds: on an even grid (2 × 2, 3 × 3 …) its feeds keep the grid's box size and the last row widens to fill the width, so those 2 sit side by side on a half-height page. A PIP shape keeps its first boxes, cut below the lowest. A wall that fits on one part-filled page spreads its feeds over the screen instead (3 feeds in 2 × 2 are 2 over 1).
 - **Each page's first feed takes its biggest box.** Press **Main** on a feed to put it there.
 - **Drag any feed to a new place,** in every layout. Press on its picture or its bar and move it:
   - The box follows the pointer, and the others slide out of its way.
