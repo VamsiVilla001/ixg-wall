@@ -232,11 +232,50 @@ async function captureSourceScreenshot(request, notify) {
   }
 }
 
+// ---- This computer's CPU and memory, for walls whose server isn't the screen ----
+// CPU is busy time over the time since the last reading (cumulative counters, so the first
+// reading after the worker starts has no percentage yet). Memory is used ÷ installed.
+let lastCpu = null;
+
+function cpuPercent(prev, next) {
+  if (!prev || !next) return null;
+  let busy = 0;
+  let total = 0;
+  for (let i = 0; i < next.length; i++) {
+    const a = prev[i]?.usage;
+    const b = next[i]?.usage;
+    if (!a || !b) continue;
+    total += b.total - a.total;
+    busy += (b.total - a.total) - (b.idle - a.idle);
+  }
+  return total > 0 ? Math.max(0, Math.min(100, (busy / total) * 100)) : null;
+}
+
+async function machineSample() {
+  const out = { at: Date.now(), cpu: null, cores: null, memUsedPct: null, memTotalGB: null };
+  try {
+    const info = await chrome.system.cpu.getInfo();
+    out.cores = info.numOfProcessors;
+    out.cpu = cpuPercent(lastCpu, info.processors);
+    lastCpu = info.processors;
+  } catch { /* no system.cpu: cpu stays null */ }
+  try {
+    const mem = await chrome.system.memory.getInfo();
+    out.memTotalGB = Math.round(mem.capacity / 1024 ** 3 * 10) / 10;
+    out.memUsedPct = ((mem.capacity - mem.availableCapacity) / mem.capacity) * 100;
+  } catch { /* no system.memory */ }
+  return out;
+}
+
 // ---- Requests arrive from the courier in a wall's player frame; one capture at a time ----
 let running = null;
 
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg?.type === 'ixg-pc-request') {
+      machineSample().then(sendResponse, () => sendResponse({ error: 'unavailable' }));
+      return true;
+    }
     if (msg?.type !== 'ixg-capture-request') return false;
     if (running) {
       sendResponse({ ok: false, reason: 'busy', message: 'A screenshot is already being captured: wait for it to finish' });
@@ -252,4 +291,4 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
   });
 }
 
-if (typeof module !== 'undefined') module.exports = { fileName, union, cropRect, detectPlatform, SOURCES, FOLDER };
+if (typeof module !== 'undefined') module.exports = { fileName, union, cropRect, detectPlatform, cpuPercent, SOURCES, FOLDER };

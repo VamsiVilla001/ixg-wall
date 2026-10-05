@@ -2733,8 +2733,24 @@
   // ---------------------------------------------------------------------------
   const backendFresh = () => backend.connected && Date.now() - backend.at < BACKEND_STALE_MS;
 
+  // This computer's CPU and memory: the backend's Windows counters on a laptop wall, else
+  // what the Feed Meter (1.4+) reads through Chrome, which is how a website wall gets them.
+  // The wall asks one of its players every loop; the courier relays (extension/courier.js).
+  const pc = { at: 0, cpu: null, cores: null, memUsedPct: null, memTotalGB: null };
+  function machine() {
+    const t = backendFresh() && !server.hosted ? backend.latest : null;
+    if (t && (t.cpu != null || t.memUsedPct != null)) return { cpu: t.cpu, cores: t.cores, memUsedPct: t.memUsedPct, memTotalGB: t.memTotalGB, source: 'backend' };
+    if (Date.now() - pc.at < 6000 && (pc.cpu != null || pc.memUsedPct != null)) return { ...pc, source: 'meter' };
+    return null;
+  }
+  function pollMachine() {
+    if (!meterActive()) return;
+    const c = courierFrame();
+    if (c) c.win.postMessage({ type: 'ixg-wall-pc', v: 1 }, c.origin);
+  }
+
   function updatePerf(now) {
-    const t = backendFresh() ? backend.latest : null;
+    const t = machine();
     const reasons = [];
     if (t?.cpu != null && t.cpu >= PERF_BUSY_CPU) reasons.push(`CPU ${Math.round(t.cpu)}%`);
     if (t?.memUsedPct != null && t.memUsedPct >= PERF_BUSY_MEM) reasons.push(`memory ${Math.round(t.memUsedPct)}%`);
@@ -3474,10 +3490,14 @@
       : isChromium() ? 'Not detected in this browser: per-feed bitrate is estimated. Install Feed Meter, below'
         : `Not available ${isMobile() ? 'on phones and tablets' : 'in this browser (Chrome or Edge on a computer only)'}: per-feed bitrate is estimated`,
     meterActive() ? (reporting < mounted.length ? 'warn' : 'ok') : 'warn'];
-    // Hosted, the server isn't this computer: only what the browser itself can tell.
+    // Hosted, the server isn't this computer: what the browser and the Feed Meter can tell.
+    const m = machine();
+    const needsMeter = 'Needs the Feed Meter 1.4 or newer in this browser';
     if (server.hosted) {
       fillKv($('#perf-kv'), [
         meterRow,
+        ['CPU', m?.cpu != null ? `${pct(m.cpu)} of ${m.cores} threads` : needsMeter, toneFor(m?.cpu, 75, PERF_BUSY_CPU)],
+        ['Memory', m?.memUsedPct != null ? `${pct(m.memUsedPct)} of ${m.memTotalGB} GB` : needsMeter, toneFor(m?.memUsedPct, 85, PERF_BUSY_MEM)],
         ['Wall tab memory', ...memoryReadout()],
         ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
           perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
@@ -3491,10 +3511,10 @@
     fillKv($('#perf-kv'), [
       ['Wall status', perf.level === 'ok' ? 'Normal' : `${perf.level === 'busy' ? 'Busy' : 'Overloaded'} · ${perf.reason}`,
         perf.level === 'ok' ? 'ok' : perf.level === 'busy' ? 'warn' : 'bad'],
-      ['CPU', t ? `${pct(t.cpu)} of ${t.cores} threads` : null, toneFor(t?.cpu, 75, PERF_BUSY_CPU)],
+      ['CPU', m?.cpu != null ? `${pct(m.cpu)} of ${m.cores} threads${m.source === 'meter' ? ' · Feed Meter' : ''}` : null, toneFor(m?.cpu, 75, PERF_BUSY_CPU)],
       ['CPU pressure (browser)', cpuPressure || ('PressureObserver' in window ? 'Waiting' : 'Not available'),
         cpuPressure === 'critical' ? 'bad' : cpuPressure === 'serious' ? 'warn' : ''],
-      ['Memory', t ? `${pct(t.memUsedPct)} of ${t.memTotalGB} GB` : null, toneFor(t?.memUsedPct, 85, PERF_BUSY_MEM)],
+      ['Memory', m?.memUsedPct != null ? `${pct(m.memUsedPct)} of ${m.memTotalGB} GB${m.source === 'meter' ? ' · Feed Meter' : ''}` : null, toneFor(m?.memUsedPct, 85, PERF_BUSY_MEM)],
       ['Wall tab memory', ...memoryReadout()],
       meterRow,
       ['Download now', t?.rxMbps != null ? `${t.rxMbps.toFixed(1)} Mbps` : null],
@@ -4301,17 +4321,15 @@
       : `Video and audio actually received by ${metered.length} of ${active.length} feeds over the last 30 s`
         + (short.length ? ` · connection can't keep up on: ${short.join(', ')}` : ' · every feed\'s connection is ahead of its bitrate');
 
-    // Measured by the backend: the laptop's whole download right now, and its CPU. On the
-    // website the server isn't the computer showing the wall, and a page can't read its own
-    // computer's CPU or network, so both say N·A rather than show the server's.
+    // Measured by the backend: the laptop's whole download right now. On the website the
+    // server isn't the computer showing the wall, and nothing in a browser can see the
+    // computer's network, so it says N·A rather than show the server's.
     if (server.hosted) {
-      for (const [id, what] of [['r-bw-now', 'download'], ['r-cpu', 'CPU']]) {
-        setText($(`#${id}`), 'N·A');
-        delete $(`#${id}`).dataset.tone;
-        setText($(`#${id}-tag`), 'N·A');
-        setText($(`#${id}-desc`), `Only the laptop wall can measure this computer's ${what}: a website can't.`);
-        $(`#${id}-wrap`).title = 'Start the wall with npm run wall (or Start IXG Wall.cmd) on this laptop to measure it';
-      }
+      setText($('#r-bw-now'), 'N·A');
+      delete $('#r-bw-now').dataset.tone;
+      setText($('#r-bw-now-tag'), 'N·A');
+      setText($('#r-bw-now-desc'), 'Only the laptop wall can measure this computer\'s download: a website can\'t.');
+      $('#r-bw-now-wrap').title = 'Start the wall with npm run wall (or Start IXG Wall.cmd) on this laptop to measure it';
     }
     const t = backendFresh() && !server.hosted ? backend.latest : null;
     if (!server.hosted) setText($readout.bwNow, t?.rxMbps != null ? `${t.rxMbps.toFixed(1)} Mbps` : '—');
@@ -4321,11 +4339,17 @@
       ? 'Backend offline: start the wall with npm run wall to measure the PC\'s download'
       : `Whole PC download on ${t.nic || 'the busiest adapter'}, measured by the backend`
         + (other != null ? ` · feeds ${getting.toFixed(1)} Mbps, everything else on this PC ${other.toFixed(1)} Mbps` : '');
-    if (!server.hosted) setText($readout.cpu, t?.cpu != null ? `${Math.round(t.cpu)}%` : '—');
-    if (!server.hosted) $readout.cpu.dataset.tone = perf.level === 'overloaded' ? 'bad' : perf.level === 'busy' || t?.cpu >= 75 ? 'warn' : '';
-    if (!server.hosted) $readout.cpu.parentElement.title = t
-      ? `Whole-laptop CPU across ${t.cores} threads${cpuPressure ? ` · browser CPU pressure: ${cpuPressure}` : ''}${perf.level !== 'ok' ? ` · ${perf.level}: ${perf.reason}` : ''}`
-      : 'Backend offline';
+    // CPU: the backend's counters on a laptop wall, the Feed Meter's reading anywhere else.
+    const m = machine();
+    setText($readout.cpu, m?.cpu != null ? `${Math.round(m.cpu)}%` : server.hosted ? 'N·A' : '—');
+    setText($('#r-cpu-tag'), m?.cpu != null ? 'Measured' : 'N·A');
+    setText($('#r-cpu-desc'), m?.source === 'meter' ? 'Processor use across this computer, read by the Feed Meter.'
+      : m ? 'Processor use across this computer.'
+        : server.hosted ? 'Needs the Feed Meter 1.4 or newer in this browser to measure this computer.' : 'Processor use across this computer.');
+    $readout.cpu.dataset.tone = perf.level === 'overloaded' ? 'bad' : perf.level === 'busy' || m?.cpu >= 75 ? 'warn' : '';
+    $readout.cpu.parentElement.title = m
+      ? `Whole-computer CPU across ${m.cores} threads, ${m.source === 'meter' ? 'read by the Feed Meter' : 'measured by the backend'}${cpuPressure ? ` · browser CPU pressure: ${cpuPressure}` : ''}${perf.level !== 'ok' ? ` · ${perf.level}: ${perf.reason}` : ''}`
+      : server.hosted ? 'Install the Feed Meter 1.4 or newer (Settings → Install Feed Meter) to measure this computer' : 'Backend offline';
     // Mixed walls show live CCV; a wall of ended broadcasts shows their total views.
     const audience = wallAudience(list);
     $('#r-ccv-wrap').hidden = !hasYtKey() || !list.length;
@@ -4350,6 +4374,7 @@
     loopTimer = setInterval(() => {
       const now = Date.now();
       wall.autoJumpsLeft = MAX_AUTO_JUMPS_PER_TICK;
+      pollMachine();
       updateCongestion(now);
       updateSync();
       updatePerf(now);
@@ -5303,6 +5328,18 @@
 
   $('#fs-shot').addEventListener('click', () => {
     if (inspected) captureSourceScreenshot(inspected);
+  });
+
+  // This computer's CPU and memory, answered by the Feed Meter through a player frame.
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || d.type !== 'ixg-pc' || d.v !== 1) return;
+    if (![...tiles.values()].some((t) => e.source === t.frame.querySelector('iframe')?.contentWindow && e.origin === t.host)) return;
+    pc.at = Date.now();
+    pc.cpu = finite(d.cpu, 100);
+    pc.cores = finite(d.cores, 4096);
+    pc.memUsedPct = finite(d.memUsedPct, 100);
+    pc.memTotalGB = finite(d.memTotalGB, 100000);
   });
   $('#fs-nerds').addEventListener('click', () => {
     if (inspected) setFocus(inspected, !inspected.focused);

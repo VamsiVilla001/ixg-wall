@@ -21,6 +21,10 @@ Since 1.1.0 it also **sets each player's quality** to the wall's "Feeds stream a
 
 With it, the wall's header shows **Feeds need** (all bitrates added up) and **Feeds getting** (all data received), both measured. On the laptop it also shows **PC download** (the whole computer), so the difference reveals other traffic on the PC. Without it, "Feeds need" falls back to typical bitrates, marked Estimated.
 
+## This computer's CPU and memory (1.4.0)
+
+On the website the server isn't the computer showing the wall, so the laptop readouts (CPU, memory, PC download, GPU) were N·A there. From 1.4.0 the extension reads **this computer's CPU and memory** (Chrome's `system.cpu` and `system.memory`) and the wall asks one of its players for them every 2 s: the CPU card in the header and the CPU and Memory rows under Settings → This computer show them, marked Measured, and the wall's busy/overloaded guard uses them. On a laptop wall the backend's Windows counters still come first; the extension fills in when the backend is away. **PC download and the GPU engines stay with the laptop backend:** no extension API sees other programs' traffic or the video engine.
+
 ## Capture Source Screenshot (1.3.0)
 
 Evidence of a feed from its **own YouTube page**, not from the wall: the player, the title, the channel name, the LIVE badge and YouTube's own **"N watching now"** count, as YouTube shows them. Open a feed's stats sheet (**Stats** on the tile) and press **Capture source screenshot**.
@@ -31,7 +35,7 @@ What happens: the wall asks the extension through one of its players (`courier.j
 - **One at a time.** A second press while one runs is refused, on the page and in the worker.
 - **The window stays behind the wall.** If the browser won't draw it there, it's brought forward for the shot and the wall gets focus straight back. Never more than one window is left open: it closes on success and on failure.
 - **Platforms:** YouTube today (`source-youtube.js`: where the parts are, what to wait for). Another platform is one more such file; the workflow doesn't change. Storage is `Storage` in `capture.js`: the browser's Downloads folder today, with room for a native helper that writes into a production folder.
-- **Permissions** this needs, all new in 1.3.0: `tabs` (open, mute and close the source window), `scripting` (read the source page), `downloads`, and the `<all_urls>` host permission, because Chrome lets an extension screenshot a tab only with that or with a click on the extension's own icon, which the wall has no way to give. Chrome words it as "read and change all your data on all websites"; the extension reads the YouTube watch page it opened and nothing else (its content scripts still run only inside embedded players).
+- **Permissions**: `system.cpu` and `system.memory` (1.4.0) for the readouts above; for screenshots (1.3.0), `tabs` (open, mute and close the source window), `scripting` (read the source page), `downloads`, and the `<all_urls>` host permission, because Chrome lets an extension screenshot a tab only with that or with a click on the extension's own icon, which the wall has no way to give. Chrome words it as "read and change all your data on all websites"; the extension reads the YouTube watch page it opened and nothing else (its content scripts still run only inside embedded players).
 
 ## Install: the wall asks for it
 

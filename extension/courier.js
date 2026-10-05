@@ -14,7 +14,16 @@
       wallOrigin = e.origin;
       return;
     }
-    if (e.data.type !== 'ixg-wall-capture' || e.data.v !== 1 || !wallOrigin || e.origin !== wallOrigin) return;
+    if (!wallOrigin || e.origin !== wallOrigin || e.data.v !== 1) return;
+    // This computer's CPU and memory (capture.js reads them): the wall asks one player every 2 s.
+    if (e.data.type === 'ixg-wall-pc') {
+      Promise.resolve().then(() => chrome.runtime.sendMessage({ type: 'ixg-pc-request' })).then(
+        (r) => { try { window.parent.postMessage({ type: 'ixg-pc', v: 1, ...(r || {}) }, wallOrigin); } catch { /* gone */ } },
+        () => { try { window.parent.postMessage({ type: 'ixg-pc', v: 1, error: 'extension' }, wallOrigin); } catch { /* gone */ } },
+      );
+      return;
+    }
+    if (e.data.type !== 'ixg-wall-capture') return;
     const { job, platform, videoId, label } = e.data;
     const reply = (m) => {
       try { window.parent.postMessage({ type: 'ixg-capture', v: 1, job, ...m }, wallOrigin); } catch { /* the wall went away */ }

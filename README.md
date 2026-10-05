@@ -6,7 +6,7 @@ It runs two ways from the same code:
 - **As a website:** on a server with a sign-in. See **[DEPLOY.md](DEPLOY.md)** for AWS.
 - **On a wall laptop:** from the project folder with Node, described below.
 
-For measured per-feed bitrate, bandwidth and audio levels, install the **[IXG Wall Feed Meter](extension/README.md)** Chrome extension on each wall computer. It also takes **source screenshots**: from a feed's Stats sheet, **Capture source screenshot** saves a PNG of the feed's own YouTube page (player, title, channel, LIVE, watching-now count) to `Downloads/IXG-Wall/Screenshots`, named `{Account}_{Title}_{CCV}CCV_{date_time}.png`.
+For measured per-feed bitrate, bandwidth and audio levels, and for the viewing computer's CPU and memory on the website, install the **[IXG Wall Feed Meter](extension/README.md)** Chrome extension on each wall computer. It also takes **source screenshots**: from a feed's Stats sheet, **Capture source screenshot** saves a PNG of the feed's own YouTube page (player, title, channel, LIVE, watching-now count) to `Downloads/IXG-Wall/Screenshots`, named `{Account}_{Title}_{CCV}CCV_{date_time}.png`.
 
 To work on the code, read **[DEVELOPMENT.md](DEVELOPMENT.md)** and **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 

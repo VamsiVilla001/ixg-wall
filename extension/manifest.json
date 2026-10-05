@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "IXG Wall Feed Meter",
-  "version": "1.3.0",
-  "description": "Measures each IXG Wall YouTube feed: stereo audio levels, bitrate, data received, connection speed, buffer and dropped frames. Captures source screenshots on request.",
+  "version": "1.4.0",
+  "description": "Measures each IXG Wall YouTube feed: stereo audio levels, bitrate, data received, connection speed, buffer and dropped frames. Reports this computer's CPU and memory, and captures source screenshots on request.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAupB5tiN1VRgUl41eyVwgUsKSd107NgnhJlD28vy8a0ncHfcwHhonBrmsyfv2vN5Ca8lbSRRS89eaRuXG2djCm8cJwFq3l8BOJ0234YTtlRN3cDUL9u2CCXnnWTf7KpFUdxQX+hL0y/9TKRYmIpk4VXgXhZjdwHOonkHp/QjCvwNU3tn8fFC/F4UKF3jqnq/ASC6iWQshnypM7YJUWazR/Icbr45uqR15ORGVQ+1XDLV+u7M6DCw4hEiXAzaHLegGgZSPC/Avpx8IN5KmTuX3T4LSzSiiInsHlIyLNbPBCqq4ktWDDKV+0eI7HKaLkm6o8roLA6gVidpnyo9udUsFlQIDAQAB",
   "minimum_chrome_version": "111",
   "permissions": [
     "tabs",
     "scripting",
-    "downloads"
+    "downloads",
+    "system.cpu",
+    "system.memory"
   ],
   "host_permissions": [
     "<all_urls>"

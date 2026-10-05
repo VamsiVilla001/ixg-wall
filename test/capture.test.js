@@ -46,3 +46,13 @@ test('YouTube takes 11-character video ids only, and opens the English watch pag
   assert.equal(IXGYouTube.wantsCount(recording), false, 'a recording has no count to wait for');
   assert.equal(IXGYouTube.sourceReady({ ...live, channel: null }), false);
 });
+
+test('CPU is busy time over the interval between two readings, across every core', () => {
+  const { cpuPercent } = require('../extension/capture');
+  const at = (idle, total) => ({ usage: { idle, total, user: 0, kernel: 0 } });
+  const prev = [at(1000, 2000), at(1000, 2000)];
+  const next = [at(1200, 3000), at(1800, 3000)]; // core 1: 800 of 1000 busy; core 2: 200 of 1000
+  assert.equal(cpuPercent(prev, next), 50);
+  assert.equal(cpuPercent(null, next), null, 'nothing to compare the first reading with');
+  assert.equal(cpuPercent(prev, prev), null, 'no time passed');
+});
