@@ -4386,13 +4386,14 @@
     const audience = wallAudience(list);
     $('#r-ccv-wrap').hidden = !hasYtKey() || !list.length;
     setText($('#r-audience-label'), audience.label);
-    setText($('#r-ccv'), audience.value == null ? '—' : audience.value.toLocaleString('en-US'));
+    // Compact (1.7M, 20K) beside the tabs; the exact count is in the tooltip.
+    setText($('#r-ccv'), audience.value == null ? '—' : audience.value < 1000 ? String(audience.value) : compactNumber.format(audience.value));
     const total = ytState?.total;
     const peak = audience.label === 'CCV' && total?.peak != null
       ? ` · peak ${fmtInt(total.peak)} at ${new Date(total.peakAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · average ${fmtInt(total.avg)}`
       : '';
     $('#r-ccv-wrap').title = audience.value != null
-      ? `${audience.label === 'Views' ? 'Total views across ended feeds' : 'Watching across live feeds'}, reported by YouTube (${audience.reported}/${audience.feeds} counts available)${peak}`
+      ? `${fmtInt(audience.value)} ${audience.label === 'Views' ? 'total views across ended feeds' : 'watching across live feeds'}, reported by YouTube (${audience.reported}/${audience.feeds} counts available)${peak}`
       : audience.feeds ? `YouTube has not reported ${audience.label === 'Views' ? 'views for these ended feeds' : 'viewer counts for these live feeds'}${peak}`
         : 'Waiting for a live or ended broadcast from YouTube…';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
