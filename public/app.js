@@ -4365,6 +4365,11 @@
         : 'Waiting for a live or ended broadcast from YouTube…';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
     $liveBadge.hidden = !playing.some((t) => t.isLive);
+    // A card nothing can measure here (N·A) is left out rather than shown empty.
+    for (const card of document.querySelectorAll('.wall-stats-grid .metric')) {
+      const tag = card.querySelector('.metric-label .tag');
+      card.hidden = (tag?.textContent === 'N·A') || card.querySelector('.metric-value')?.textContent === 'N·A';
+    }
     renderSessionChip();
     renderWallTimeline();
   }
