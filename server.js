@@ -512,9 +512,16 @@ server.on('error', async (err) => {
   console.log(`The IXG Wall backend is already running on port ${PORT}.`);
   if (OPEN) {
     try {
+      const headers = { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' };
+      if (config.PASSWORD) {
+        // A wall with sign-in: in like a page would be, with the password this start was given.
+        const login = await fetch(`http://127.0.0.1:${PORT}/api/login`, { method: 'POST', headers, body: JSON.stringify({ password: config.PASSWORD }) });
+        const cookie = login.headers.get('set-cookie');
+        if (cookie) headers.Cookie = cookie.split(';')[0];
+      }
       const res = await fetch(`http://127.0.0.1:${PORT}/api/wall-browser`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
+        headers,
         body: JSON.stringify({ action: 'launch' }),
       });
       const s = await res.json();

@@ -10,3 +10,6 @@ node_modules/
 # Local settings and data for npm run dev:hosted (see .env.example)
 .env
 .data/
+
+# This computer's own settings for the laptop wall, e.g. its password (see local.env.example)
+local.env

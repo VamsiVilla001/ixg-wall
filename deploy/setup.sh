@@ -81,7 +81,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 IXG_HOSTED=1
 # The address people open.
 PUBLIC_URL=$URL
-# Shared sign-in password (12+ characters). Changing it signs everyone out.
+# Shared sign-in password (8+ characters). Changing it signs everyone out.
 IXG_PASSWORD=$NEW_PASSWORD
 # Optional: the YouTube Data API key, set here instead of in the wall's Settings.
 YOUTUBE_API_KEY=

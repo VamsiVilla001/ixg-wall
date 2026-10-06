@@ -8,7 +8,7 @@ const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '127.0.0.1';
 const HOSTED = /^(1|true|yes)$/i.test(process.env.IXG_HOSTED || '');
 const PASSWORD = process.env.IXG_PASSWORD || '';
-const MIN_PASSWORD = 12;
+const MIN_PASSWORD = 8;
 
 function publicUrl() {
   const raw = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).trim().replace(/\/+$/, '');

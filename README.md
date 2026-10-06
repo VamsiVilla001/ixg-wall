@@ -12,10 +12,11 @@ To work on the code, read **[DEVELOPMENT.md](DEVELOPMENT.md)** and **[docs/ARCHI
 
 ## Run it on a laptop
 
-Needs Node 22+ and Chrome or Edge. There's nothing to install or build: the app has no dependencies.
+Needs Node 22.9+ and Chrome or Edge. There's nothing to install or build: the app has no dependencies.
 
 - **`Start IXG Wall.cmd`** (double-click) or **`npm run wall`**: starts the backend and opens the wall in its own window. Keep the black backend window open while the wall runs.
 - Starting it again while the wall runs just brings back the wall window.
+- **Sign-in (optional):** copy `local.env.example` to `local.env` beside the launcher and set `IXG_PASSWORD` (8+ characters). The wall then asks for it: whoever signs in with it is an admin, and admins hand out **user links** (Settings → User links) to everyone else. `local.env` is never committed.
 - **`npm start`**: backend only. Open http://localhost:8080 in any browser.
 - Every window shares one wall. Feeds and settings are kept in `%LOCALAPPDATA%\IXG Wall\wall.json`. The YouTube API key is kept apart, in `secrets.json`, and is never sent back to a browser.
 - To update a laptop, copy or pull the new project folder and restart the wall.

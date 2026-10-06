@@ -4,11 +4,11 @@
   "private": true,
   "description": "Low-latency YouTube monitoring wall for 20-30 live feeds: a website with sign-in, or run on a laptop with a managed wall window",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "scripts": {
-    "start": "node server.js",
-    "wall": "node server.js --open",
+    "start": "node --env-file-if-exists=local.env server.js",
+    "wall": "node --env-file-if-exists=local.env server.js --open",
     "dev:hosted": "node --env-file=.env server.js",
     "test": "node --test"
   }

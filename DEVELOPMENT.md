@@ -28,7 +28,7 @@ npm test           # no npm install: the app has no dependencies
 PORT=8095 IXG_DATA_DIR=./.data node server.js
 ```
 
-`.data/` and `.env` are git-ignored. Test feeds saved into the real `wall.json` would also stop operators' browser walls from migrating.
+`.data/`, `.env` and `local.env` (a laptop's own settings, e.g. its password) are git-ignored. Test feeds saved into the real `wall.json` would also stop operators' browser walls from migrating.
 
 **Restart the backend after changing server code.** Edits to `server.js` or `backend/` only take effect after a restart; changes in `public/` only need a page reload. On a laptop, restart with `npm start`, not `--open`, or you get a second wall window.
 

@@ -159,7 +159,7 @@ Share the wall password only with admins. Everyone else gets a user link: the si
 |---|---|
 | Browser shows a certificate error, or Caddy logs `challenge failed` | DNS doesn't point at the server yet, or port 80/443 is closed |
 | `502 Bad Gateway` | The wall service isn't running: `journalctl -u ixg-wall -n 50` |
-| Service won't start: `IXG_PASSWORD is required` / `must be at least 12 characters` | Fix `/etc/ixg-wall/ixg-wall.env` and restart |
+| Service won't start: `IXG_PASSWORD is required` / `must be at least 8 characters` | Fix `/etc/ixg-wall/ixg-wall.env` and restart |
 | Settings → YouTube API says the key is restricted to other IP addresses | Allow the server's IP in the key's Google Cloud restrictions |
 | Feeds show "Missing referrer" (error 153) | Something in front of the wall strips the Referer header; the wall sends `strict-origin-when-cross-origin` |
 | Option B: every page is `Forbidden` | The CloudFront `X-Origin-Verify` header is missing or doesn't match `/etc/ixg-wall/origin-token` |
