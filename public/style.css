@@ -825,6 +825,24 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
    red, a shade off the alarm red, which stays reserved for buffering and faults. */
 .tl[data-state="live"] .tl-fill, .tl[data-state="live"] .tl-knob { background: var(--tl-live); }
 .tl[data-state="ended"] .tl-fill, .tl[data-state="ended"] .tl-knob { background: var(--muted-foreground); }
+/* Viewer counts over a hovered bar, on the bar's own span: peak and low marked, a cursor at
+   the pointer. The label moves up to sit above it. */
+.tl-graph { position: absolute; left: 0; right: 0; bottom: 100%; width: 100%; height: 44px; pointer-events: none; z-index: 1; background: color-mix(in oklab, var(--background) 78%, transparent); }
+.tile-tl .tl-graph { bottom: calc(100% + 1px); }
+.tl.has-graph .tl-tip { bottom: calc(100% + 50px); }
+.tl-graph .area { fill: color-mix(in oklab, var(--tl-live) 24%, transparent); }
+.tl-graph .line { fill: none; stroke: var(--tl-live); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.tl[data-state="ended"] .tl-graph .area, .tl-master .tl-graph .area { fill: color-mix(in oklab, var(--foreground) 14%, transparent); }
+.tl[data-state="ended"] .tl-graph .line, .tl-master .tl-graph .line { stroke: var(--foreground); }
+.tl-graph .pt { fill: var(--tl-live); }
+.tl-graph .untracked { fill: color-mix(in oklab, var(--foreground) 7%, transparent); }
+.tl-graph .untracked-edge { stroke: var(--muted-foreground); stroke-width: 1; stroke-dasharray: 3 3; }
+.tl-graph .untracked-text { fill: var(--muted-foreground); font: 600 9px/1 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+.tl[data-state="ended"] .tl-graph .pt, .tl-master .tl-graph .pt { fill: var(--foreground); }
+.tl-graph .mark { fill: var(--foreground); stroke: var(--background); stroke-width: 1; }
+.tl-graph .mark-text { fill: var(--foreground); font: 600 9px/1 var(--font-mono); letter-spacing: .03em; paint-order: stroke; stroke: var(--background); stroke-width: 2.5px; stroke-linejoin: round; }
+.tl-graph .cursor { stroke: var(--foreground); stroke-width: 1; stroke-dasharray: 2 2; }
+.tl-graph .cursor-dot { fill: var(--foreground); stroke: var(--background); stroke-width: 1; }
 
 .transport {
   flex: none;

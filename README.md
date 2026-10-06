@@ -59,6 +59,7 @@ The bar at the bottom right of the wall picks how feeds are arranged.
 
 Every live feed whose broadcast allows YouTube's live rewind (DVR) can be moved back.
 - **Each tile** has a seek bar along the top of the bar under its video. Hover to see the moment, click or drag to move just that feed. It shows **Own −2:30** until you press **Jump live** on it.
+- **Viewers along the bar.** With a YouTube API key, hovering a seek bar draws the feed's watching-now count over the bar's span (the wall total on the wall timeline), with the peak and low marked and the count at the pointer in the label. Set the bars to **All** to see as far back as YouTube's live rewind keeps (the backend records up to 24 h; a stream is recorded from the moment its feed is on the wall).
 - **The wall timeline** under the wall moves every feed to the same moment, by YouTube's time stamp on the frame. Use it to replay one moment from every POV together.
   - Pause, −10 s and +10 s.
   - **Last 5 min … All** sets how much the bars cover.

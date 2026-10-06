@@ -956,6 +956,13 @@
           const v = this.timelineView();
           if (v) this.seekBar(v.left + p * (v.right - v.left));
         },
+        graph: {
+          window: () => {
+            const v = this.timelineView();
+            return v?.live && v.k != null ? { t0: (v.left + v.k) * 1000, t1: (v.right + v.k) * 1000 } : null;
+          },
+          series: (onLoad) => historyFor(this.stream.source.id, onLoad),
+        },
       });
       tileOf.set(this.el, this);
       tileObserver.observe(this.el);
@@ -4669,19 +4676,178 @@
   // Timelines: a seek bar on every feed, and one for the wall that moves every live feed to
   // the same moment. The sync controller holds them there (updateSync, Tile.keepInSync).
   // ---------------------------------------------------------------------------
+  // ---- Viewer counts along the timelines -----------------------------------------------
+  // Hovering a seek bar draws the audience over the bar's own span: YouTube's watching-now
+  // count for that feed, or the wall total on the wall timeline, from the backend's history.
+  // Fetched when a bar is first hovered and again once YouTube has reported since.
+  const TL_GRAPH_H = 44; // the curve sits between the peak label's room above and the low's below
+  const viewerHistory = new Map(); // video id, or 'total' -> { at, series, loading }
+
+  function historyFor(id, onLoad) {
+    if (server.linkYoutube === false || location.protocol === 'file:') return [];
+    const c = viewerHistory.get(id);
+    if (c && (c.loading || c.at >= ytStatsAt)) return c.series;
+    const entry = { at: ytStatsAt, series: c?.series || [], loading: true };
+    viewerHistory.set(id, entry);
+    api(`/api/youtube/history?id=${encodeURIComponent(id)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (Array.isArray(body?.series)) entry.series = body.series;
+        if (onLoad) onLoad();
+      })
+      .catch(() => { /* backend offline: the last series stays */ })
+      .finally(() => { entry.loading = false; });
+    return entry.series;
+  }
+
+  // The reading nearest to time t (ms) within a couple of polls, or null.
+  function viewersAt(series, t) {
+    const tol = Math.max(3 * 60000, 2.5 * (ytState?.pollMs || 60000));
+    let best = null;
+    for (const p of series) {
+      if (p[1] == null) continue;
+      const d = Math.abs(p[0] - t);
+      if (d <= tol && (!best || d < best.d)) best = { d, t: p[0], v: p[1] };
+    }
+    return best;
+  }
+
+  // The counts between t0 and t1 (ms) drawn across W pixels: the area and line, a gap in the
+  // readings left open, the highest and lowest in view marked, and a cursor the hover moves.
+  // The stretch before the first reading (the backend wasn't tracking the feed yet) is shaded
+  // and says so. Returns { move, from }: the cursor mover and the first reading's time, or
+  // null with too little to draw.
+  function drawViewerGraph(svg, series, t0, t1, W) {
+    const H = TL_GRAPH_H;
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = (name, attrs) => {
+      const n = document.createElementNS(NS, name);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+      return n;
+    };
+    const pts = series.filter((p) => p[1] != null && p[0] >= t0 && p[0] <= t1);
+    if (pts.length < 2 || t1 <= t0) {
+      svg.replaceChildren();
+      return null;
+    }
+    const vals = pts.map((p) => p[1]);
+    const max = Math.max(...vals);
+    const min = Math.min(...vals);
+    const pad = Math.max((max - min) * 0.15, max * 0.02, 1);
+    const top = max + pad;
+    const bottom = Math.max(0, min - pad);
+    const x = (t) => ((t - t0) / (t1 - t0)) * W;
+    const y = (v) => H - 12 - ((v - bottom) / (top - bottom)) * (H - 23);
+    const f = (n) => n.toFixed(1);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    // A gap is a stretch much longer than the readings' usual spacing (the refresh interval
+    // may have been different when they were taken), never less than 6 minutes.
+    const spacings = pts.slice(1).map((p, i) => p[0] - pts[i][0]).sort((a, b) => a - b);
+    const gap = Math.max(6 * 60000, 3 * spacings[Math.floor(spacings.length / 2)]);
+    const runs = [];
+    let run = [];
+    for (const p of pts) {
+      if (run.length && p[0] - run[run.length - 1][0] > gap) {
+        runs.push(run);
+        run = [];
+      }
+      run.push(p);
+    }
+    runs.push(run);
+    const nodes = [];
+    const from = pts[0][0];
+    if (from - t0 > gap) {
+      const w = x(from);
+      nodes.push(el('rect', { class: 'untracked', x: 0, y: 0, width: f(w), height: H }));
+      nodes.push(el('line', { class: 'untracked-edge', x1: f(w), x2: f(w), y1: 0, y2: H }));
+      const words = `no readings before ${clockTime(from)}`;
+      // Only where the words fit (9px mono runs about 6px a character), so they never cross the edge.
+      if (w > words.length * 6 + 12) nodes.push(Object.assign(el('text', { class: 'untracked-text', x: 6, y: f(H / 2 + 3) }), { textContent: words }));
+    }
+    for (const seg of runs) {
+      if (seg.length === 1) { // a reading on its own between gaps: a dot, not an invisible line
+        nodes.push(el('circle', { class: 'pt', cx: f(x(seg[0][0])), cy: f(y(seg[0][1])), r: 1.5 }));
+        continue;
+      }
+      const line = seg.map((p) => `${f(x(p[0]))},${f(y(p[1]))}`).join(' ');
+      nodes.push(el('path', { class: 'area', d: `M${f(x(seg[0][0]))},${H} L${line.replace(/ /g, ' L')} L${f(x(seg[seg.length - 1][0]))},${H} Z` }));
+      nodes.push(el('polyline', { class: 'line', points: line }));
+    }
+    // Peak above its point, low below; labels kept inside the graph, on the roomier side.
+    const mark = (p, arrow, above) => {
+      const px = x(p[0]);
+      const py = y(p[1]);
+      nodes.push(el('circle', { class: 'mark', cx: f(px), cy: f(py), r: 2.5 }));
+      const left = px < W / 2;
+      nodes.push(Object.assign(el('text', {
+        class: 'mark-text',
+        x: f(clamp(px + (left ? 5 : -5), 2, W - 2, px)),
+        y: f(above ? Math.max(9, py - 5) : Math.min(H - 2, py + 11)),
+        'text-anchor': left ? 'start' : 'end',
+      }), { textContent: `${arrow} ${fmtCount(p[1])}` }));
+    };
+    mark(pts.find((p) => p[1] === max), '▲', true);
+    if (min !== max) mark(pts.find((p) => p[1] === min), '▼', false);
+    const cursor = el('line', { class: 'cursor', y1: 0, y2: H, x1: 0, x2: 0, visibility: 'hidden' });
+    const dot = el('circle', { class: 'cursor-dot', r: 3, visibility: 'hidden' });
+    nodes.push(cursor, dot);
+    svg.replaceChildren(...nodes);
+    const move = (near) => {
+      if (!near) {
+        cursor.setAttribute('visibility', 'hidden');
+        dot.setAttribute('visibility', 'hidden');
+        return;
+      }
+      const px = f(x(near.t));
+      cursor.setAttribute('x1', px);
+      cursor.setAttribute('x2', px);
+      cursor.setAttribute('visibility', 'visible');
+      dot.setAttribute('cx', px);
+      dot.setAttribute('cy', f(y(near.v)));
+      dot.setAttribute('visibility', 'visible');
+    };
+    return { move, from };
+  }
+
   // A seek bar: hovering labels the moment under the pointer; a click, or a drag released,
   // seeks. Seeking 30 players on every pointer move would flood them, so a drag only previews.
-  function scrubber(el, { describe, commit }) {
+  // With `graph` (window: the bar's ends as epoch ms; series: the readings), hovering also
+  // draws the viewer counts over the bar and names the count under the pointer.
+  function scrubber(el, { describe, commit, graph }) {
     const $tip = el.querySelector('.tl-tip');
+    const $graph = el.querySelector('.tl-graph');
     let dragging = false;
+    let drawn = null; // { t0, t1, series, move, at } while the graph is up
+    const draw = () => {
+      if (!graph || !$graph) return;
+      const w = graph.window();
+      const series = w ? graph.series(() => { if (drawn || el.matches(':hover')) draw(); }) : [];
+      const g = w && series.length ? drawViewerGraph($graph, series, w.t0, w.t1, Math.max(40, el.clientWidth)) : null;
+      drawn = g ? { ...w, series, move: g.move, from: g.from, at: Date.now() } : null;
+      $graph.toggleAttribute('hidden', !drawn); // the attribute: an SVG element has no .hidden
+      el.classList.toggle('has-graph', !!drawn);
+    };
+    const hideGraph = () => {
+      drawn = null;
+      $graph?.setAttribute('hidden', '');
+      el.classList.remove('has-graph');
+    };
     const at = (e) => {
       const r = el.getBoundingClientRect();
       return r.width ? clamp((e.clientX - r.left) / r.width, 0, 1, 0) : 0;
     };
     const tip = (p) => {
-      const text = describe(p);
+      let text = describe(p);
       $tip.hidden = !text;
       if (!text) return false;
+      if (drawn) {
+        if (Date.now() - drawn.at > 2000) draw(); // the bar's ends move with live
+        const t = drawn ? drawn.t0 + p * (drawn.t1 - drawn.t0) : 0;
+        const near = drawn && viewersAt(drawn.series, t);
+        if (near) text += ` · ${fmtCount(near.v)} watching`;
+        else if (drawn && t < drawn.from) text += ` · no readings before ${clockTime(drawn.from)}`;
+        if (drawn) drawn.move(near);
+      }
       $tip.textContent = text;
       // Kept inside the bar, so a label at either end isn't cut off by the tile's edge.
       const w = el.clientWidth;
@@ -4697,6 +4863,7 @@
       el.classList.add('dragging');
       el.style.setProperty('--drag', String(at(e)));
     });
+    el.addEventListener('pointerenter', () => draw());
     el.addEventListener('pointermove', (e) => {
       const p = at(e);
       tip(p);
@@ -4706,13 +4873,18 @@
       if (!dragging) return;
       dragging = false;
       el.classList.remove('dragging');
-      if (!el.matches(':hover')) $tip.hidden = true;
+      if (!el.matches(':hover')) {
+        $tip.hidden = true;
+        hideGraph();
+      }
       if (apply) commit(at(e));
     };
     el.addEventListener('pointerup', (e) => end(e, true));
     el.addEventListener('pointercancel', (e) => end(e, false));
     el.addEventListener('pointerleave', () => {
-      if (!dragging) $tip.hidden = true;
+      if (dragging) return;
+      $tip.hidden = true;
+      hideGraph();
     });
   }
 
@@ -4846,6 +5018,15 @@
     commit: (p) => {
       const v = wallTimelineView();
       if (v) seekWall(v.live + Math.min((1 - p) * v.span, v.reach));
+    },
+    graph: {
+      window: () => {
+        const v = wallTimelineView();
+        if (!v) return null;
+        const t1 = (v.nowS - v.live) * 1000;
+        return { t0: t1 - v.span * 1000, t1 };
+      },
+      series: (onLoad) => historyFor('total', onLoad),
     },
   });
 
