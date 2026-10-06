@@ -30,6 +30,12 @@
   let audioGraph = null;
   let audioRetryAt = 0;
   let audioState = 'waiting';
+  // Chrome starts audio here only after a click or key in this player or in the wall page
+  // (the player is allowed autoplay, so the page's gesture counts), or in the managed wall
+  // window. The wall says when ({ audio: true }); until then nothing is created or resumed,
+  // since each refused start is logged as an error against the extension.
+  let wallAudio = false;
+  const audioAllowed = () => wallAudio || !!navigator.userActivation?.hasBeenActive;
 
   // Capture decoded audio without rerouting the player or changing mute/volume.
   // captureStream audio is pre-mute; the analyser branch never produces audible output.
@@ -59,6 +65,7 @@
     if (audioGraph && (audioGraph.video !== video || audioGraph.tracks.some((t) => t.readyState === 'ended'))) closeAudio();
     if (!video || video.readyState < 2) return { status: 'waiting', channels: [] };
     if (video.paused || video.ended) return { status: 'idle', channels: [] };
+    if (!audioGraph && !audioAllowed()) return { status: 'suspended', channels: [] };
     if (!audioGraph && Date.now() >= audioRetryAt) {
       audioRetryAt = Date.now() + 5000;
       let stream;
@@ -102,7 +109,7 @@
     if (!audioGraph) return { status: audioState, channels: [] };
     const g = audioGraph;
     if (g.context.state !== 'running') {
-      if (Date.now() >= g.resumeAt) {
+      if (Date.now() >= g.resumeAt && audioAllowed()) {
         g.resumeAt = Date.now() + 5000;
         g.context.resume().catch(() => {});
       }
@@ -255,12 +262,16 @@
     if (e.data?.type === 'ixg-wall-hello') {
       const first = !wallOrigin;
       wallOrigin = e.origin;
+      if (e.data.audio === true) wallAudio = true;
       if (first) {
         setInterval(report, SAMPLE_MS);
         setInterval(reportAudio, 100);
       }
       report();
       reportAudio();
+    } else if (e.data?.type === 'ixg-wall-audio' && wallOrigin && e.origin === wallOrigin) {
+      wallAudio = true; // the wall page was clicked: audio may start now
+      audioGraph?.context.resume().catch(() => {});
     } else if (e.data?.type === 'ixg-wall-quality' && wallOrigin && e.origin === wallOrigin) {
       // Only from the page this player already reports to.
       qualityTarget = QUALITIES.includes(e.data.quality) ? e.data.quality : null;

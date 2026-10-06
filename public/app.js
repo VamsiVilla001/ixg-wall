@@ -586,6 +586,22 @@
   let cpuPressure = null;    // Compute Pressure API state for this browser: nominal…critical
   let decodeHere = null;     // 'hardware' | 'software' for this window, from MediaCapabilities
   const managedWindow = new URLSearchParams(location.search).get('wall') === 'managed';
+  // Whether Chrome lets the players start audio for the Feed Meter's levels: after a click or
+  // key on this page (the players are allowed autoplay, so the gesture counts for them), or
+  // in the managed wall window, started without that rule. The meter waits for this.
+  const audioAllowed = () => managedWindow || !!navigator.userActivation?.hasBeenActive;
+  if (!managedWindow) {
+    // Told once, on the first gesture the browser counts (Esc or a touch that scrolls don't).
+    const GESTURES = ['pointerdown', 'pointerup', 'click', 'keydown'];
+    const tellMeters = () => {
+      if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
+      for (const type of GESTURES) window.removeEventListener(type, tellMeters, { capture: true });
+      for (const t of tiles.values()) {
+        try { t.frame.querySelector('iframe')?.contentWindow?.postMessage({ type: 'ixg-wall-audio', v: 1 }, t.host); } catch { /* being replaced */ }
+      }
+    };
+    for (const type of GESTURES) window.addEventListener(type, tellMeters, { capture: true, passive: true });
+  }
   const perf = {
     level: 'ok',             // 'ok' | 'busy' | 'overloaded'
     reason: '',
@@ -1160,7 +1176,7 @@
     helloMeter() {
       this.lastHelloAt = Date.now();
       try {
-        this.frame.querySelector('iframe')?.contentWindow?.postMessage({ type: 'ixg-wall-hello', v: 1 }, this.host);
+        this.frame.querySelector('iframe')?.contentWindow?.postMessage({ type: 'ixg-wall-hello', v: 1, audio: audioAllowed() }, this.host);
       } catch {
         // the frame is being replaced
       }
@@ -1987,7 +2003,7 @@
       const detail = channels.length
         ? `Audio levels (dBFS, before playback mute): L ${channels[0].rmsDb.toFixed(1)} RMS / ${channels[0].peakDb.toFixed(1)} peak; R ${channels[1].rmsDb.toFixed(1)} RMS / ${channels[1].peakDb.toFixed(1)} peak`
         : state === 'ended' ? 'Broadcast ended and no player is running'
-          : state === 'suspended' ? 'Audio analyser paused by the browser. Interact with the YouTube player to enable it, or use the managed wall window.'
+          : state === 'suspended' ? 'Audio levels start after a click or key press anywhere on the wall (a browser rule), or straight away in the managed wall window.'
             : state === 'idle' ? 'Player paused: no current audio levels'
               : state === 'no-audio' ? 'No audio track available in this player'
                 : 'Audio levels unavailable. Install or update IXG Wall Feed Meter 1.2.0, then refresh this feed.';

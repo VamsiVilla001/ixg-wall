@@ -13,7 +13,7 @@ function slice(source, start, end) {
   return source.slice(a, b);
 }
 
-function capture({ suspended = false, mono = false } = {}) {
+function capture({ suspended = false, mono = false, active = true } = {}) {
   const track = { readyState: 'live', muted: false, stopped: false, stop() { this.stopped = true; }, getSettings: () => ({ channelCount: mono ? 1 : 2 }) };
   const videoTrack = { stopped: false, stop() { this.stopped = true; } };
   const stream = { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [videoTrack], removeTrack() {} };
@@ -21,18 +21,21 @@ function capture({ suspended = false, mono = false } = {}) {
   const calls = [];
   const makeNode = (name) => ({ connect(to, channel) { calls.push([name, to.name, channel]); }, disconnect() { calls.push(['disconnect']); } });
   let lastContext;
+  let created = 0;
+  let resumes = 0;
+  const userActivation = { hasBeenActive: active };
   class Audio {
-    constructor() { this.state = suspended ? 'suspended' : 'running'; this.destination = { name: 'destination' }; lastContext = this; }
+    constructor() { created += 1; this.state = suspended ? 'suspended' : 'running'; this.destination = { name: 'destination' }; lastContext = this; }
     createMediaStreamSource() { return makeNode('source'); }
     createChannelSplitter() { return makeNode('splitter'); }
     createGain() { this.gain = { ...makeNode('gain'), gain: { value: 1 }, name: 'gain' }; return this.gain; }
     createAnalyser() { return { ...makeNode('analyser'), name: 'analyser', getFloatTimeDomainData: (buffer) => buffer.fill(0.5) }; }
-    resume() { return Promise.resolve(); }
+    resume() { resumes += 1; return Promise.resolve(); }
     close() { this.closed = true; return Promise.resolve(); }
   }
-  const context = vm.createContext({ window: { AudioContext: Audio }, document: { querySelector: () => video } });
+  const context = vm.createContext({ window: { AudioContext: Audio }, document: { querySelector: () => video }, navigator: { userActivation } });
   vm.runInContext(`${slice(extension, '  let audioGraph', "  for (const event of ['pointerdown'")}; globalThis.api = { sampleAudio, audioLevels, closeAudio };`, context);
-  return { ...context.api, video, track, videoTrack, calls, audio: () => lastContext };
+  return { ...context.api, video, track, videoTrack, calls, userActivation, audio: () => lastContext, created: () => created, resumes: () => resumes };
 }
 
 test('audio RMS and peak use dBFS, distinguish silence from unavailable, and clamp overloads', () => {
@@ -74,6 +77,17 @@ test('mono uses the same input for both meters; suspended, paused and inaccessib
   c.audio().state = 'running';
   c.track.muted = true;
   assert.equal(c.sampleAudio().status, 'unavailable');
+});
+
+test('before a click or key, audio is neither created nor resumed, so Chrome has nothing to refuse', () => {
+  const c = capture({ active: false, suspended: true });
+  assert.equal(c.sampleAudio().status, 'suspended');
+  assert.equal(c.sampleAudio().channels.length, 0);
+  assert.equal(c.created(), 0, 'no AudioContext before the gesture');
+  c.userActivation.hasBeenActive = true;
+  assert.equal(c.sampleAudio().status, 'suspended');
+  assert.equal(c.created(), 1);
+  assert.equal(c.resumes(), 1, 'resumed once the gesture allows it');
 });
 
 test('the wall rejects malformed or out-of-range levels from player frames', () => {
