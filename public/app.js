@@ -2584,11 +2584,16 @@
     const ended = reports.filter((v) => v.ended || v.yt.endedAt);
     const chosen = live.length ? live : ended;
     const values = chosen.map((v) => audienceMetric(v.yt, v.ended).value).filter((v) => v != null);
+    // Beside a CCV, the total views of every feed on the wall, live or ended.
+    const views = reports.map((v) => v.yt.views).filter((v) => v != null);
     return {
       label: live.length || !ended.length ? 'CCV' : 'Views',
       value: values.length ? values.reduce((sum, v) => sum + Number(v), 0) : null,
       reported: values.length,
       feeds: chosen.length,
+      views: views.length ? views.reduce((sum, v) => sum + Number(v), 0) : null,
+      viewsReported: views.length,
+      viewsFeeds: reports.length,
     };
   }
 
@@ -4433,6 +4438,12 @@
       ? `${fmtInt(audience.value)} ${audience.label === 'Views' ? 'total views across ended feeds' : 'watching across live feeds'}, reported by YouTube (${audience.reported}/${audience.feeds} counts available)${peak}`
       : audience.feeds ? `YouTube has not reported ${audience.label === 'Views' ? 'views for these ended feeds' : 'viewer counts for these live feeds'}${peak}`
         : 'Waiting for a live or ended broadcast from YouTube…';
+    // Beside a CCV, the wall's total views (a wall of ended feeds already shows them).
+    $('#r-views-wrap').hidden = $('#r-ccv-wrap').hidden || audience.label !== 'CCV' || !audience.viewsFeeds;
+    setText($('#r-views'), audience.views == null ? '—' : audience.views < 1000 ? String(audience.views) : compactNumber.format(audience.views));
+    $('#r-views-wrap').title = audience.views != null
+      ? `${fmtInt(audience.views)} total views across the wall's feeds, live and ended, reported by YouTube (${audience.viewsReported}/${audience.viewsFeeds} counts available)`
+      : 'YouTube has not reported views for these feeds';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
     $liveBadge.hidden = !playing.some((t) => t.isLive);
     // A card nothing can measure here (N·A) is left out rather than shown empty.

@@ -72,6 +72,20 @@ test('mixed walls count live CCV without adding ended views or duplicate video I
   assert.equal(metric.feeds, 1);
 });
 
+test('beside the CCV, views total every feed on the wall, live and ended, once per video', () => {
+  const w = wall();
+  w.reports.set('live', { broadcast: 'live', viewers: 15, views: 5000 });
+  w.reports.set('ended', { broadcast: 'none', endedAt: '2026-10-05T12:54:00Z', views: 8000 });
+  w.reports.set('hidden', { broadcast: 'live', viewers: 3, views: null });
+  w.reports.set('gone', { missing: true });
+  const metric = w.total(['live', 'live', 'ended', 'hidden', 'gone']);
+  assert.equal(metric.label, 'CCV');
+  assert.equal(metric.views, 13000);
+  assert.equal(metric.viewsReported, 2);
+  assert.equal(metric.viewsFeeds, 3);
+  assert.equal(w.total(['hidden']).views, null, 'no counts: unavailable, not zero');
+});
+
 test('owner-confirmed completion uses views while the public broadcast response is still live', () => {
   const w = wall();
   w.reports.set('one', { broadcast: 'live', viewers: 99, views: 500 });
