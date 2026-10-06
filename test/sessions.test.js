@@ -103,3 +103,13 @@ test('malformed sessions are rejected', async () => {
   assert.equal((await putWall({ ...current, savedSessions: [{ id: 'a', name: 'x', streams: [{ id: 'bad' }] }] })).status, 400);
   assert.equal((await putWall({ ...current, savedSessions: Array.from({ length: 51 }, (_, i) => ({ id: `s${i}`, name: 'x', streams: [] })) })).status, 400);
 });
+
+test('a feed keeps its own quality; anything but 480p, 720p or 1080p is rejected', async () => {
+  const wall = await getWall();
+  const streams = [{ ...feed('x-qOOPXB_lg', 'Hindi Test Main'), quality: 'hd720' }, feed('2QK4W5bngD0', 'English Test Main')];
+  assert.equal((await putWall({ ...wall, streams })).status, 200);
+  assert.deepEqual((await getWall()).streams.map((s) => s.quality), ['hd720', undefined]);
+  for (const quality of ['hd2160', 'tiny', 720, '']) {
+    assert.equal((await putWall({ ...wall, streams: [{ ...streams[0], quality }] })).status, 400, `quality ${JSON.stringify(quality)}`);
+  }
+});

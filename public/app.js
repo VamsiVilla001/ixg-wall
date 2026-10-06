@@ -45,6 +45,9 @@
     autoCaptureMin: [1, 60],
   };
   const FEED_QUALITIES = ['large', 'hd720', 'hd1080'];
+  // A feed's own quality, set from its Stats sheet; absent, it follows the wall's setting.
+  const ownQuality = (stream) => (FEED_QUALITIES.includes(stream?.quality) ? stream.quality : null);
+  const setOwnQuality = (stream, q) => { if (q) stream.quality = q; else delete stream.quality; };
   const OFFSCREEN_RELEASE_MS = 60000; // a feed scrolled out of view keeps its quality this long, then drops to 480p
 
   // YouTube quality levels: frame width, and a typical live bitrate. The bitrate is an
@@ -505,6 +508,11 @@
           if (!!t.stream.priority !== !!s.priority) {
             t.stream.priority = !!s.priority;
             changes.push(`${s.label}: priority ${s.priority ? 'on' : 'off'}`);
+          }
+          if (ownQuality(t.stream) !== ownQuality(s)) {
+            setOwnQuality(t.stream, ownQuality(s));
+            t.qualityChanged();
+            changes.push(`${s.label}: quality ${ownQuality(s) ? QUALITY[ownQuality(s)].label : 'wall default'}`);
           }
           streams[i] = t.stream;
         });
@@ -1119,11 +1127,23 @@
       return !!this.meterNow(now)?.setsQuality;
     }
 
-    // What a boost raises this feed to: the priority ceiling, or the quality feeds stream at
-    // (whichever is higher for a priority feed). Without the Feed Meter, that quality only
+    // What a boost raises this feed to: the quality set for this feed, else the priority
+    // ceiling or the quality feeds stream at (whichever is higher for a priority feed). Without the Feed Meter, that quality only
     // applies to feeds on screen in scroll mode.
     boostQuality() {
+      const own = ownQuality(this.stream);
+      if (own) return own; // set for this feed (Stats sheet): over the wall's and the priority ceiling
       if (!onScreenQuality() && !this.meterSetsQuality()) return settings.priorityQuality;
+      const q = settings.feedQuality;
+      return this.stream.priority && rank(settings.priorityQuality) > rank(q) ? settings.priorityQuality : q;
+    }
+
+    // What this feed gets with no quality of its own, for the Stats sheet's "Wall default":
+    // the wall's setting (the priority ceiling if higher, for a priority feed); without the
+    // Feed Meter outside the scroll and preset layouts, the ceiling for a priority feed and
+    // the tile's size (null) for the rest.
+    wallQuality() {
+      if (!onScreenQuality() && !this.meterSetsQuality()) return this.stream.priority ? settings.priorityQuality : null;
       const q = settings.feedQuality;
       return this.stream.priority && rank(settings.priorityQuality) > rank(q) ? settings.priorityQuality : q;
     }
@@ -1132,7 +1152,7 @@
     // do, and in scroll mode so do feeds on screen; a feed scrolled away keeps its boost for
     // a minute so scrolling past doesn't force refreshes.
     wantsBoost(now = Date.now()) {
-      if (this.stream.priority || this.meterSetsQuality(now)) return true;
+      if (this.stream.priority || ownQuality(this.stream) || this.meterSetsQuality(now)) return true;
       if (!onScreenQuality()) return false;
       return this.inView || now - this.leftViewAt < OFFSCREEN_RELEASE_MS;
     }
@@ -1159,6 +1179,15 @@
       } catch {
         // the frame is being replaced
       }
+    }
+
+    // This feed's quality setting changed: send the new level, or refresh to release a higher one.
+    qualityChanged() {
+      allocate();
+      this.applySize();
+      if (this.meterSetsQuality()) this.sendQuality(Date.now());
+      else if (this.mounted && this.quality && rank(this.quality) > rank(this.targetQuality())) this.reload('feed quality lowered');
+      this.render();
     }
 
     // Estimated Mbps this feed is pulling: the level the player reports, else the planned one.
@@ -2208,7 +2237,7 @@
       t.setBoost(!held, held);
     }
     for (const t of list) {
-      if (t.boosted && !wanting.includes(t)) t.setBoost(false, onScreenQuality() ? 'scrolled out of view' : 'priority removed');
+      if (t.boosted && !wanting.includes(t)) t.setBoost(false, onScreenQuality() ? 'scrolled out of view' : 'priority or its own quality removed');
     }
   }
 
@@ -2460,6 +2489,10 @@
     setText($('#fs-label'), t.stream.label);
     setText($('#fs-sub'), [data.title, data.author].filter(Boolean).join(' · ') || t.stream.source.id);
     $('#fs-open').href = `https://www.youtube.com/watch?v=${t.stream.source.id}`;
+    const $q = $('#fs-quality');
+    if (document.activeElement !== $q) $q.value = ownQuality(t.stream) || '';
+    const wallQ = t.wallQuality();
+    setText($q.options[0], `Wall default (${wallQ ? QUALITY[wallQ].label : 'tile size'})`);
     const $nerds = $('#fs-nerds');
     $nerds.setAttribute('aria-pressed', String(t.focused));
     setText($nerds, t.focused ? 'Hide YouTube stats' : 'Show YouTube stats');
@@ -2528,7 +2561,8 @@
       ['Best the source offers', best ? QUALITY[best].label : null],
       t.meterSetsQuality(now)
         ? ['Quality target', `${QUALITY[t.targetQuality()].label} · set by Feed Meter${t.boosted ? '' : ` · held: ${t.heldReason || 'waiting'}`}${t.meter.qualityApplied && t.meter.qualityApplied !== t.targetQuality() ? ` · stream offers ${QUALITY[t.meter.qualityApplied].label}` : ''}`, t.boosted ? '' : 'warn']
-        : ['Render target', `${QUALITY[t.targetQuality()].label} · ${t.boosted ? (t.stream.priority ? 'priority boost' : 'on screen') : 'tile size'}`],
+        // Without the Feed Meter the render size sets the level, so a boost below it changes nothing.
+        : ['Render target', `${QUALITY[t.targetQuality()].label} · ${t.boosted && rank(t.boostQuality()) > rank(t.naturalQuality()) ? (ownQuality(t.stream) ? 'set for this feed' : t.stream.priority ? 'priority boost' : 'on screen') : 'tile size'}`],
       ['Priority', !t.stream.priority ? 'Off' : t.boosted ? 'Boosted' : `Held · ${t.heldReason || 'waiting'}`,
         t.stream.priority && !t.boosted ? 'warn' : ''],
       ['Embed host', host],
@@ -3595,6 +3629,17 @@
     const $launch = $('#wall-launch');
     $launch.hidden = !!b?.running;
     $launch.disabled = !t || !b?.supported;
+  }
+
+  // A feed's own quality (Stats sheet), or null to follow the wall's "Feeds stream at".
+  function setFeedQuality(tile, q) {
+    const want = FEED_QUALITIES.includes(q) ? q : null;
+    if (ownQuality(tile.stream) === want) return;
+    setOwnQuality(tile.stream, want);
+    store.save();
+    logEvent(tile, want ? `Quality set for this feed: ${QUALITY[want].label}` : 'Quality back to the wall default');
+    tile.qualityChanged();
+    renderFeedSheet();
   }
 
   function togglePriority(tile) {
@@ -5341,6 +5386,9 @@
     }
   });
   $('#fs-close').addEventListener('click', closeFeedSheet);
+  $('#fs-quality').addEventListener('change', (e) => {
+    if (inspected) setFeedQuality(inspected, e.target.value);
+  });
   $('#fs-link').addEventListener('click', () => {
     if (inspected) changeLink(inspected);
   });

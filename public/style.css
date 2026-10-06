@@ -1000,6 +1000,7 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 .feed-sub { margin-top: 2px; color: var(--muted-foreground); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-actions { display: flex; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
 .feed-actions a.btn { text-decoration: none; }
+.fs-quality { display: inline-flex; align-items: center; gap: 6px; }
 .feed-actions { flex-wrap: wrap; }
 .fs-shot-status { margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere; }
 .fs-shot-status[data-tone="ok"] { color: var(--ok-on-dark); }

@@ -504,6 +504,15 @@
       <button id="fs-nerds" class="btn btn-outline btn-sm" aria-pressed="false" title="Enlarge this feed and open YouTube's own Stats for nerds: connection speed, dropped frames, codecs, latency mode">Show YouTube stats</button>
       <button id="fs-link" class="btn btn-outline btn-sm" title="Point this feed at a different YouTube link, keeping its place, label and priority" data-admin-only>Change link</button>
       <a id="fs-open" class="btn btn-ghost btn-sm" target="_blank" rel="noopener">Open on YouTube</a>
+      <label class="fs-quality" title="What this feed streams at, over the wall's Feeds stream at (Settings) and the priority ceiling. With the Feed Meter it applies within about 15 s; without it, YouTube sizes quality to the player, so a lower level takes a refresh and can't go below what the tile's size pulls.">
+        <span class="telemetry muted">Quality</span>
+        <select id="fs-quality" class="input select">
+          <option value="">Wall default</option>
+          <option value="large">480p</option>
+          <option value="hd720">720p</option>
+          <option value="hd1080">1080p</option>
+        </select>
+      </label>
       <button id="fs-shot" class="btn btn-outline btn-sm" title="Capture Source Screenshot: opens this feed's own YouTube page in a window behind the wall, waits for its title, channel, LIVE state and watching-now count, saves the block as a PNG in Downloads/IXG-Wall/Screenshots, and closes the window">Capture source screenshot</button>
     </div>
     <p class="fs-shot-status" id="fs-shot-status" role="status" hidden></p>

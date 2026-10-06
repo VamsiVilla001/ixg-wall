@@ -76,9 +76,13 @@ function stripSecrets(wall) {
   return typeof key === 'string' ? key.trim() : '';
 }
 
+// A feed's own quality, when set from its Stats sheet; otherwise the wall's setting applies.
+const FEED_QUALITIES = ['large', 'hd720', 'hd1080'];
+
 function validStreams(list) {
   return Array.isArray(list) && list.length <= MAX_STREAMS && list.every((s) => s && typeof s.id === 'string'
-    && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id) && typeof s.label === 'string' && s.label.length <= 300);
+    && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id) && typeof s.label === 'string' && s.label.length <= 300
+    && (s.quality == null || FEED_QUALITIES.includes(s.quality)));
 }
 
 // Stamps are ISO times (UTC) plus the time zone of the browser that started the session.
