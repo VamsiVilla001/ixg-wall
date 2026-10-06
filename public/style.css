@@ -122,11 +122,13 @@ code { font-family: var(--font-mono); }
   cursor: pointer;
   transition: background-color 120ms var(--ease-swift), border-color 120ms var(--ease-swift), color 120ms var(--ease-swift);
 }
-.btn:hover { background: var(--ixg-action-hover); }
-.btn:active { background: var(--ixg-action-hover); } /* press darkens; the geometry holds */
-.btn-accent { background: var(--ixg-action); color: var(--background); }
-.btn-accent:hover { background: var(--ixg-action-hover); }
-.btn-accent:active { background: var(--ixg-action-hover); }
+/* Plain and accent buttons are neutral ink; the action purple marks what's ON (pressed,
+   selected, checked), so an on-state never reads as a stale button. */
+.btn:hover { background: var(--ixg-ink-700); }
+.btn:active { background: var(--ixg-ink-700); } /* press dims; the geometry holds */
+.btn-accent { background: var(--foreground); color: var(--background); }
+.btn-accent:hover { background: var(--ixg-ink-700); }
+.btn-accent:active { background: var(--ixg-ink-700); }
 .btn-outline { background: transparent; color: var(--foreground); box-shadow: inset 0 0 0 1px var(--input); }
 .btn-outline:hover { background: var(--secondary); }
 .btn-outline:active { background: var(--border); }
@@ -189,8 +191,8 @@ code { font-family: var(--font-mono); }
   background: var(--foreground);
   transition: transform 180ms var(--ease-swift), background-color 180ms var(--ease-swift);
 }
-.switch:checked { background: var(--foreground); }
-.switch:checked::after { transform: translateX(14px); background: var(--background); }
+.switch:checked { background: var(--ixg-action); }
+.switch:checked::after { transform: translateX(14px); background: var(--ixg-action-ink); }
 
 /* Top bar — one 48px row: brand, live state, telemetry strip, actions. Adding feeds lives
    in a popover so the bar never wraps and the wall keeps its height. */
@@ -621,8 +623,8 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 }
 .btn-overlay:hover { background: var(--secondary); }
 .btn-overlay:active { background: var(--border); }
-/* Selection uses neutral ink. */
-.btn-overlay[aria-pressed="true"] { background: var(--foreground); color: var(--background); box-shadow: none; }
+/* On: the action purple. */
+.btn-overlay[aria-pressed="true"] { background: var(--ixg-action); color: var(--ixg-action-ink); box-shadow: none; }
 
 /* Side card: fills the spare width beside the video. Built from IXG metric roles: figure
    label, mono value (weight 500, at the system's lg / md / sm sizes), provenance. The state word
@@ -874,7 +876,7 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 }
 .layout-btn svg { width: 22px; height: 15px; fill: currentColor; }
 .layout-btn:hover { color: var(--foreground); }
-.layout-btn[aria-pressed="true"] { background: var(--foreground); color: var(--background); }
+.layout-btn[aria-pressed="true"] { background: var(--ixg-action); color: var(--ixg-action-ink); }
 .layout-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .layout-more[aria-expanded="true"] { box-shadow: inset 0 0 0 1px var(--foreground); }
 .layout-panel { top: auto; bottom: calc(100% + 6px); right: 12px; width: auto; display: grid; gap: 10px; z-index: 13; }
@@ -994,7 +996,7 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 .section-title { margin: 8px 0 2px; }
 .stats-btn { flex: none; height: 20px; padding: 0 6px; color: var(--muted-foreground); box-shadow: inset 0 0 0 1px var(--border); }
 .stats-btn:hover { color: var(--foreground); }
-.tile.inspected .stats-btn { background: var(--foreground); color: var(--background); box-shadow: none; }
+.tile.inspected .stats-btn { background: var(--ixg-action); color: var(--ixg-action-ink); box-shadow: none; }
 
 /* Inspecting with YouTube's own stats: the player is lifted beside the feed sheet and scaled
    up from its normal render size, so it keeps streaming at the same quality. */
@@ -1021,7 +1023,7 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 .fs-shot-status { margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere; }
 .fs-shot-status[data-tone="ok"] { color: var(--ok-on-dark); }
 .fs-shot-status[data-tone="bad"] { color: var(--danger-on-dark); }
-#fs-nerds[aria-pressed="true"] { background: var(--foreground); color: var(--background); box-shadow: none; }
+#fs-nerds[aria-pressed="true"] { background: var(--ixg-action); color: var(--ixg-action-ink); box-shadow: none; }
 .feed-body { flex: 1; min-height: 0; overflow-y: auto; }
 .section-head { display: flex; align-items: center; justify-content: space-between; margin: 8px 0 6px; }
 .section-head .tag { padding: 0 5px; font-size: 9px; }
@@ -1222,15 +1224,21 @@ strong, b { font-weight: 600; }
 .brand-logo { width: 32px; height: 28px; display: block; flex: none; }
 .brand-sub { display: inline !important; color: var(--foreground); font: 500 17px/1 var(--font-display); letter-spacing: -.01em; text-transform: none; }
 .topbar { --topbar-h: 44px; gap: 16px; padding-inline: 16px; flex-shrink: 0; }
-.btn { height: 28px; border: 1px solid transparent; font-size: 13px; background: var(--ixg-action); color: var(--ixg-action-ink); }
-.btn:hover, .btn:active, .btn-accent:hover, .btn-accent:active { background: var(--ixg-action-hover); }
-.btn-accent { background: var(--ixg-action); color: var(--ixg-action-ink); }
+.btn { height: 28px; border: 1px solid transparent; font-size: 13px; background: var(--foreground); color: var(--background); }
+.btn:hover, .btn:active, .btn-accent:hover, .btn-accent:active { background: var(--ixg-ink-700); }
+.btn-accent { background: var(--foreground); color: var(--background); }
 .btn-outline { background: transparent; color: var(--foreground); border-color: var(--border); box-shadow: none; }
 .btn-outline:hover, .btn-outline:active { background: var(--secondary); }
 .btn-ghost { background: transparent; color: var(--ixg-ink-700); }
 .btn-ghost:hover, .btn-ghost:active { background: var(--secondary); color: var(--foreground); }
 .btn-destructive { background: transparent; border-color: var(--danger); color: var(--danger-on-dark); }
 .btn-destructive:hover, .btn-destructive:active { background: var(--ixg-fault-bg); }
+/* An ON button stays purple under the pointer: the hover rules above would otherwise turn it
+   light grey behind its white text. The base purple, not the lighter hover shade: white 11px
+   text needs the contrast. */
+.btn[aria-pressed="true"]:hover, .btn[aria-pressed="true"]:active { background: var(--ixg-action); color: var(--ixg-action-ink); }
+/* The layout bar's two modes are plain buttons; chosen, they're ON like the preset icons. */
+#layout-scroll[aria-pressed="true"], #layout-fit[aria-pressed="true"] { background: var(--ixg-action); color: var(--ixg-action-ink); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-xs { height: 24px; font-size: 11px; }
 .btn-icon { padding: 0; }
