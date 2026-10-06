@@ -27,14 +27,41 @@ test('a new CCV high queues one screenshot; the first reading and the history ar
   live(B, 50);
   step();
   assert.deepEqual(ac.open(), [], 'nothing on the first look: those highs were already seen');
-  live(A, 1150);
+  live(A, 1050);
   step();
-  assert.deepEqual(ac.open(), [], 'below the high in the history');
+  assert.deepEqual(ac.open(), [], 'up 5% from a reading 17% under the high seen before: not a peak yet');
   live(A, 1300);
   live(B, 60);
   step();
   const open = ac.open();
   assert.deepEqual(open.map((j) => [j.id, j.reason, j.ccv, j.label]), [[A, 'peak', 1300, 'Feed A'], [B, 'peak', 60, 'Feed B']]);
+});
+
+test('after a fall of 10% or more, a rise of 10% is a peak of its own, even below the stream\'s high', () => {
+  const { ac, live, step } = setup({ history: { [A]: [[0, 1200]] } });
+  live(A, 1000); // 17% under the 1200 seen before: a fall already
+  step();
+  live(A, 1090);
+  step();
+  assert.deepEqual(ac.open(), [], '9% up from the low: not yet');
+  live(A, 1100);
+  step();
+  assert.deepEqual(ac.open().map((j) => j.ccv), [1100], '10% up from the 1000 low: a peak, though under 1200');
+  ac.finish(ac.claim(ac.open()[0].job).job, { outcome: 'saved' });
+  live(A, 1040); // a 5% dip: not a fall
+  step(PEAK_COOLDOWN_MS);
+  live(A, 1150);
+  step();
+  assert.deepEqual(ac.open().map((j) => j.ccv), [1150], 'back above the last screenshot: a new high');
+  ac.finish(ac.claim(ac.open()[0].job).job, { outcome: 'saved' });
+  live(A, 1000); // 13% under the 1150 screenshot
+  step(PEAK_COOLDOWN_MS);
+  live(A, 1080);
+  step();
+  assert.deepEqual(ac.open(), [], '8% up from the low: still climbing, not a peak');
+  live(A, 1120);
+  step();
+  assert.deepEqual(ac.open().map((j) => j.ccv), [1120], 'a second lower peak after a second fall');
 });
 
 test('one peak per feed per cooldown; a high the cooldown held back is taken after, if still at it', () => {

@@ -22,6 +22,10 @@ test('file names carry account, title, CCV and time, with Windows-safe character
   assert.equal(fileName({ account: 'KRAFTON INDIA ESPORTS', title: 'BGMI FINALS', ccv: null }, when, 'END'),
     'KRAFTON_INDIA_ESPORTS_BGMI_FINALS_CCV-NA_END_2026-10-05_205215.png');
   assert.equal(fileName({ account: 'A', title: 'B', ccv: '5' }, when, '../x'), 'A_B_5CCV_2026-10-05_205215.png');
+  // An ended broadcast: its total views where the live count was; a live count still wins.
+  assert.equal(fileName({ account: 'KRAFTON INDIA ESPORTS', title: 'BGMI FINALS', ccv: null, views: '1,203,551' }, when, 'END'),
+    'KRAFTON_INDIA_ESPORTS_BGMI_FINALS_1203551Views_END_2026-10-05_205215.png');
+  assert.equal(fileName({ account: 'A', title: 'B', ccv: '1.2K', views: '1.3M' }, when), 'A_B_1.2KCCV_2026-10-05_205215.png');
   assert.ok(fileName({ account: 'a'.repeat(100), title: 'b'.repeat(200), ccv: '5' }, when).length < 140, 'long names are cut');
   assert.equal(FOLDER, 'IXG-Wall/Screenshots');
 });
@@ -47,9 +51,15 @@ test('YouTube takes 11-character video ids only, and opens the English watch pag
   // What the stages wait for, and what the picture must hold.
   const live = { player: { x: 0, y: 0, width: 1, height: 1 }, title: 'T', channel: 'C', live: true, viewersText: '12,345', titleBox: {}, channelBox: {}, countBox: { x: 0, y: 2, width: 1, height: 1 } };
   assert.ok(IXGYouTube.sourceReady(live) && IXGYouTube.wantsCount(live) && IXGYouTube.countReady(live));
-  assert.deepEqual(IXGYouTube.facts(live), { account: 'C', title: 'T', live: true, ccv: '12,345' });
-  const recording = { ...live, live: false, viewersText: null };
-  assert.equal(IXGYouTube.wantsCount(recording), false, 'a recording has no count to wait for');
+  assert.deepEqual(IXGYouTube.facts(live), { account: 'C', title: 'T', live: true, ccv: '12,345', views: null });
+  // Ended (or a recording): the total views stand in for the count, and are waited for too.
+  const ended = { ...live, live: false, viewersText: null, viewsText: null, countBox: null, viewsBox: null };
+  assert.ok(IXGYouTube.wantsCount(ended) && !IXGYouTube.countReady(ended), 'waits for the views line');
+  const shown = { ...ended, viewsText: '1,203,551', viewsBox: { x: 0, y: 2, width: 1, height: 1 } };
+  assert.ok(IXGYouTube.countReady(shown));
+  assert.deepEqual(IXGYouTube.facts(shown), { account: 'C', title: 'T', live: false, ccv: null, views: '1,203,551' });
+  assert.equal(IXGYouTube.parts(shown).length, 4, 'the views line is in the picture');
+  assert.ok(!IXGYouTube.countReady({ ...live, viewersText: null, viewsText: '9' }), 'live: the watching count, not a views figure');
   assert.equal(IXGYouTube.sourceReady({ ...live, channel: null }), false);
 });
 

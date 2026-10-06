@@ -5688,7 +5688,7 @@
     if (d.state === 'progress') return shotStatus(text(d.message) || 'Working…', '', auto);
     if (d.state === 'done') {
       const f = d.facts && typeof d.facts === 'object' ? d.facts : {};
-      const what = [text(f.account, 60), f.live ? 'LIVE' : '', f.ccv ? `${text(f.ccv, 20)} watching` : 'CCV not shown'].filter(Boolean).join(' · ');
+      const what = [text(f.account, 60), f.live ? 'LIVE' : '', f.ccv ? `${text(f.ccv, 20)} watching` : f.views ? `${text(f.views, 20)} views` : 'CCV not shown'].filter(Boolean).join(' · ');
       logEvent(tile, `${kind} saved: ${text(d.file, 300)}${what ? ` (${what})` : ''}`);
       return endShot(`Screenshot saved: ${text(d.file, 300)}${d.note ? ` · ${text(d.note)}` : ''}`, 'ok', { outcome: 'saved', detail: `${text(d.file, 300)}${what ? ` (${what})` : ''}` });
     }

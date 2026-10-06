@@ -93,9 +93,10 @@ const IXGYouTube = {
     out.viewersText = count;
     const row = [info, document.querySelector('#view-count')?.closest('ytd-watch-info-text, #info-container, #info'), document.querySelector('#view-count')].find(shown);
     out.countBox = count ? box(row) : null;
+    // An ended broadcast (or a recording) shows its total views where the live count was.
     const viewsRe = /(\d[\d,.]*\s*[KMB]?)\s+views?\b/i;
     const views = (info && anyText(info, viewsRe)) || anyText(metadata, viewsRe);
-    out.viewsText = views ? views.t : null;
+    out.viewsText = views ? viewsRe.exec(views.t)[1].replace(/\s+/g, '') : null;
     out.viewsBox = views ? box(row || views.el) : null;
 
     // LIVE: the player's badge, the page's broadcast metadata, or a live count on screen.
@@ -109,14 +110,15 @@ const IXGYouTube = {
 
   // Stage 1: the player and the page's identity are on screen.
   sourceReady: (s) => !!(s.player && s.title && s.channel),
-  // Stage 2: a live broadcast's viewer count (a recording has none to wait for).
-  wantsCount: (s) => s.live !== false,
-  countReady: (s) => !!s.viewersText,
+  // Stage 2: the audience line, which renders late: a live broadcast's watching-now count,
+  // or the total views of one that has ended (or a recording).
+  wantsCount: () => true,
+  countReady: (s) => !!(s.viewersText || (s.live !== true && s.viewsText)),
 
   // Player, title, channel and the count line, as one block.
   parts: (s) => [s.player, s.titleBox, s.channelBox, s.countBox || s.viewsBox].filter(Boolean),
 
-  facts: (s) => ({ account: s.channel, title: s.title, live: s.live, ccv: s.viewersText }),
+  facts: (s) => ({ account: s.channel, title: s.title, live: s.live, ccv: s.viewersText, views: s.viewersText ? null : s.viewsText }),
 };
 
 if (typeof module !== 'undefined') module.exports = { IXGYouTube };

@@ -14,7 +14,7 @@
   'use strict';
   if (window.top === window) return; // only players embedded in a page
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const SAMPLE_MS = 2000;
   const WINDOW_MS = 30000;      // bitrate and data received are averaged over this
   const MIN_MEDIA_S = 4;        // media seconds needed in the window before a bitrate is given

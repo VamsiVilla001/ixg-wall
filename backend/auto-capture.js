@@ -1,12 +1,15 @@
 // Automatic source screenshots. The backend decides when one is due, so every open window
-// agrees: a feed's CCV reaches a new high (at most once per feed every 2 or 4 min, Settings →
-// Source screenshots), or YouTube says a feed's broadcast is over after this server saw it
-// live. A wall page with the Feed Meter claims each job (first claim wins, so one window
-// takes it) and reports back; the screenshot itself is the same one as Capture source
-// screenshot (extension/capture.js).
+// agrees: a feed's CCV reaches a peak (a new high for the stream, or a rise of PEAK_RISE
+// after a fall of PEAK_DIP from the last screenshot; at most once per feed every 2 or 4 min,
+// Settings → Source screenshots), or YouTube says a feed's broadcast is over after this
+// server saw it live. A wall page with the Feed Meter claims each job (first claim wins, so
+// one window takes it) and reports back; the screenshot itself is the same one as Capture
+// source screenshot (extension/capture.js).
 const { EventEmitter } = require('events');
 
 const PEAK_GAP_MIN = 2;              // one CCV-peak screenshot per feed per this many minutes, at most (autoCaptureMin)
+const PEAK_DIP = 0.1;                // fallen this far below the last screenshot's count, the next rise is a peak of its own...
+const PEAK_RISE = 0.1;               // ...once it has risen this far from the lowest point since
 const LEASE_MS = 3 * 60000;          // a claim not reported back in this long is offered again
 const TTL_MS = 30 * 60000;           // a job nobody claims this long (no page with the Feed Meter) is dropped
 const MAX_TRIES = 3;                 // a job handed back this often (no player, the extension hiccuped) is dropped
@@ -20,7 +23,7 @@ class AutoCapture extends EventEmitter {
     this.ingest = ingest;
     this.wallStore = wallStore;
     this.now = now;
-    this.feeds = new Map(); // video id -> { high, captured, capturedAt, liveSeen, ended }
+    this.feeds = new Map(); // video id -> { captured, capturedAt, low, riseHigh, liveSeen, ended }
     this.jobs = [];         // [{ job, id, reason: peak | end, ccv, label, createdAt, claimedAt, client, tries, holdUntil, busyNoted }]
     this.log = [];          // what was decided and what came of it, for the wall's event log
     this.logSeq = 0;
@@ -87,10 +90,11 @@ class AutoCapture extends EventEmitter {
       if (!v || v.missing) continue;
       let f = this.feeds.get(id);
       if (!f) {
-        // Highs already in the history, and this first reading, were seen before: only a
-        // higher one is news.
+        // The high already in the history stands for the last screenshot (it was seen
+        // before); the rise is tracked from this first reading.
         const high = Math.max(v.viewers ?? -1, ...(this.youtube.history[id] || []).map((p) => p[1] ?? -1));
-        f = { high, captured: high, capturedAt: 0, liveSeen: false, ended: false };
+        const start = v.viewers ?? high;
+        f = { captured: high, capturedAt: 0, low: start, riseHigh: start, liveSeen: false, ended: false };
         this.feeds.set(id, f);
       }
       const over = this.over(id, v);
@@ -106,13 +110,23 @@ class AutoCapture extends EventEmitter {
       f.liveSeen = true;
       const ccv = v.viewers;
       if (ccv == null) continue;
-      f.high = Math.max(f.high, ccv);
-      // A new high while the count is at it; one cut short by the cooldown is taken once the
-      // cooldown is over, if the count is still at the high then.
-      if (ccv >= f.high && ccv > f.captured && now - f.capturedAt >= this.peakGapMs() && this.enabled()) {
+      // The lowest point since the last screenshot, and the high of the rise from it.
+      if (ccv < f.low) {
+        f.low = ccv;
+        f.riseHigh = ccv;
+      } else if (ccv > f.riseHigh) {
+        f.riseHigh = ccv;
+      }
+      // A peak while the count is at it: higher than the last screenshot, or a rise of its own
+      // after a real fall. One cut short by the cooldown is taken once the cooldown is over,
+      // if the count is still at the high then.
+      const dipped = f.low <= f.captured * (1 - PEAK_DIP) && ccv >= f.low * (1 + PEAK_RISE);
+      if (ccv >= f.riseHigh && (ccv > f.captured || dipped) && now - f.capturedAt >= this.peakGapMs() && this.enabled()) {
         this.queue(id, 'peak', ccv, now);
         f.captured = ccv;
         f.capturedAt = now;
+        f.low = ccv;
+        f.riseHigh = ccv;
       }
     }
     return this.signature() !== before;
@@ -193,4 +207,4 @@ class AutoCapture extends EventEmitter {
   }
 }
 
-module.exports = { AutoCapture, PEAK_GAP_MIN, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS };
+module.exports = { AutoCapture, PEAK_GAP_MIN, PEAK_DIP, PEAK_RISE, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS };

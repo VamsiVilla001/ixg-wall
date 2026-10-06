@@ -26,7 +26,7 @@ backend/
                         they're saved; the channel sign-ins (any number) and their tokens
   wall-store.js         the wall: feeds + settings (wall.json), versioned
   youtube.js            YouTube Data API poller + 24 h audience history (youtube-history.json)
-  auto-capture.js       when an automatic source screenshot is due (a feed's new CCV high, at
+  auto-capture.js       when an automatic source screenshot is due (a CCV peak: a new high, or a 10% rise after a 10% fall, at
                         most once per 2 or 4 min; a broadcast seen ending); pages with the Feed Meter
                         claim each job (/api/capture/claim, first wins) and report back
   extension.js          ships the Feed Meter: its fixed ID and version for the page's install

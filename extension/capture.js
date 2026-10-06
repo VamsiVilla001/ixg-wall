@@ -60,16 +60,18 @@ function downloadDone(id) {
   });
 }
 
-// ---- Names: {Account}_{Title}_{CCV}[_{PEAK|END}]_{date_time}.png, safe on Windows ----
-// The tag marks an automatic screenshot and why it was taken (1.5.0); a manual one has none.
+// ---- Names: {Account}_{Title}_{CCV}CCV[_{PEAK|END}]_{date_time}.png, safe on Windows ----
+// An ended broadcast has total views where the live count was: {Views}Views (1.6.0). The tag
+// marks an automatic screenshot and why it was taken (1.5.0); a manual one has none.
 const TAGS = new Set(['PEAK', 'END']);
 
-function fileName({ account, title, ccv }, when = new Date(), tag = '') {
+function fileName({ account, title, ccv, views }, when = new Date(), tag = '') {
   const safe = (s, max) => String(s || '').normalize('NFKC')
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
     .replace(/[\s.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
     .slice(0, max).replace(/_$/, '') || 'Unknown';
-  const count = ccv ? `${String(ccv).replace(/[^\dKMB.]/gi, '').replace(/\.$/, '')}CCV` : 'CCV-NA';
+  const digits = (s) => String(s).replace(/[^\dKMB.]/gi, '').replace(/\.$/, '');
+  const count = ccv ? `${digits(ccv)}CCV` : views ? `${digits(views)}Views` : 'CCV-NA';
   const p = (n) => String(n).padStart(2, '0');
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}${p(when.getMinutes())}${p(when.getSeconds())}`;
   return `${safe(account, 40)}_${safe(title, 60)}_${count}_${TAGS.has(tag) ? `${tag}_` : ''}${stamp}.png`;
@@ -221,7 +223,7 @@ async function captureSourceScreenshot(request, notify) {
     if (source.wantsCount(state)) {
       notify('count', 'Waiting for CCV…');
       ({ state, timedOut } = await waitFor(tab.id, source, source.countReady, COUNT_TIMEOUT_MS));
-      if (timedOut) countMissing = 'Viewer count could not be detected: saved as CCV-NA';
+      if (timedOut) countMissing = 'No viewer or view count could be detected: saved as CCV-NA';
     }
     await sleep(SETTLE_MS);
     state = await probe(tab.id, source); // fresh positions and numbers for the shot
