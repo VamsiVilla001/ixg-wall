@@ -24,13 +24,13 @@
       return;
     }
     if (e.data.type !== 'ixg-wall-capture') return;
-    const { job, platform, videoId, label } = e.data;
+    const { job, platform, videoId, label, tag } = e.data;
     const reply = (m) => {
       try { window.parent.postMessage({ type: 'ixg-capture', v: 1, job, ...m }, wallOrigin); } catch { /* the wall went away */ }
     };
     let answer;
     try {
-      answer = chrome.runtime.sendMessage({ type: 'ixg-capture-request', job, platform: String(platform || ''), videoId: String(videoId || ''), label: String(label || '').slice(0, 80) });
+      answer = chrome.runtime.sendMessage({ type: 'ixg-capture-request', job, platform: String(platform || ''), videoId: String(videoId || ''), label: String(label || '').slice(0, 80), tag: String(tag || '').slice(0, 8) });
     } catch (err) {
       return reply({ state: 'failed', reason: 'extension', message: `Feed Meter can't take the request: ${err.message}. Reload the extension in chrome://extensions` });
     }

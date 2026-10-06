@@ -26,6 +26,9 @@ backend/
                         they're saved; the channel sign-ins (any number) and their tokens
   wall-store.js         the wall: feeds + settings (wall.json), versioned
   youtube.js            YouTube Data API poller + 24 h audience history (youtube-history.json)
+  auto-capture.js       when an automatic source screenshot is due (a feed's new CCV high, at
+                        most once per 2 or 4 min; a broadcast seen ending); pages with the Feed Meter
+                        claim each job (/api/capture/claim, first wins) and report back
   extension.js          ships the Feed Meter: its fixed ID and version for the page's install
                         check, and /extension/ixg-wall-feed-meter.zip built from extension/
   youtube-ingest.js     ingest health per feed, read through the signed-in channel that owns it:
@@ -44,7 +47,7 @@ public/
   fonts/                Space Grotesk and Manrope (IXG variable fonts)
 extension/              IXG Wall Feed Meter: Chrome extension that measures each player from
                         inside (meter.js: bitrate, data received, connection speed, audio),
-                        and captures source screenshots on request (capture.js: the workflow
+                        and captures source screenshots on request or automatically (capture.js: the workflow
                         in its service worker; courier.js: relays the page's request from a
                         player frame; source-youtube.js: what to wait for and crop on YouTube)
 tools/check-feed-meter.js    end-to-end check of the extension in a throwaway Chrome

@@ -430,6 +430,21 @@
           <button type="button" id="offload-now" class="btn btn-outline btn-sm">Offload memory now</button>
         </div>
       </section>
+      <section class="sheet-section" data-admin-only>
+        <p class="telemetry muted section-title">Source screenshots</p>
+        <label class="switch-row">
+          <input class="switch" type="checkbox" role="switch" data-setting="autoCapture">
+          <span>Capture automatically at CCV peaks and when a stream ends</span>
+        </label>
+        <label class="field">
+          <span>At most one CCV-peak screenshot per feed every</span>
+          <select class="input select" data-setting="autoCaptureMin">
+            <option value="2">2 min</option>
+            <option value="4">4 min</option>
+          </select>
+        </label>
+        <p class="hint">Takes the same screenshot as Capture source screenshot (Stats sheet), without a click: when a feed's watching-now count reaches a new high (at most once per feed in the time above; the counts are checked at every YouTube refresh), and once when YouTube says a feed's broadcast is over. Files are named with <code>_PEAK_</code> or <code>_END_</code> (Feed Meter 1.5) and saved to Downloads/IXG-Wall/Screenshots on the computer that took them. The backend decides when, so with several wall windows open only one takes each screenshot: an admin's window with the Feed Meter. Needs a YouTube API key for the counts. Everything queued, saved, dropped or failed is recorded in the event log under Wall stats.</p>
+      </section>
       <section class="sheet-section" id="terms">
         <p class="telemetry muted section-title">What the numbers mean</p>
         <p class="hint">A frame travels: encoder → YouTube → network → this PC's player → screen. Each reading belongs to one of those steps.</p>

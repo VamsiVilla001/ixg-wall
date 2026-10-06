@@ -60,8 +60,11 @@ function downloadDone(id) {
   });
 }
 
-// ---- Names: {Account}_{Title}_{CCV}_{date_time}.png, safe on Windows ----
-function fileName({ account, title, ccv }, when = new Date()) {
+// ---- Names: {Account}_{Title}_{CCV}[_{PEAK|END}]_{date_time}.png, safe on Windows ----
+// The tag marks an automatic screenshot and why it was taken (1.5.0); a manual one has none.
+const TAGS = new Set(['PEAK', 'END']);
+
+function fileName({ account, title, ccv }, when = new Date(), tag = '') {
   const safe = (s, max) => String(s || '').normalize('NFKC')
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '')
     .replace(/[\s.]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
@@ -69,7 +72,7 @@ function fileName({ account, title, ccv }, when = new Date()) {
   const count = ccv ? `${String(ccv).replace(/[^\dKMB.]/gi, '').replace(/\.$/, '')}CCV` : 'CCV-NA';
   const p = (n) => String(n).padStart(2, '0');
   const stamp = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}_${p(when.getHours())}${p(when.getMinutes())}${p(when.getSeconds())}`;
-  return `${safe(account, 40)}_${safe(title, 60)}_${count}_${stamp}.png`;
+  return `${safe(account, 40)}_${safe(title, 60)}_${count}_${TAGS.has(tag) ? `${tag}_` : ''}${stamp}.png`;
 }
 
 // ---- Geometry: the block to keep, in page CSS pixels, then as viewport pixels ----
@@ -225,7 +228,7 @@ async function captureSourceScreenshot(request, notify) {
     notify('capturing', 'Capturing…');
     const png = await captureRelevantArea(tab, source.parts(state), request.wallWindowId);
     const facts = source.facts(state);
-    const file = await saveScreenshot(png, fileName(facts));
+    const file = await saveScreenshot(png, fileName(facts, new Date(), request.tag));
     return { ok: true, file, facts, note: countMissing };
   } finally {
     await closeSourceTab(tab);
@@ -284,7 +287,7 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
     const notify = (step, message) => {
       chrome.tabs.sendMessage(sender.tab.id, { type: 'ixg-capture-progress', job: msg.job, step, message }, { frameId: sender.frameId }).catch(() => {});
     };
-    const request = { platform: msg.platform, videoId: msg.videoId, label: msg.label, wallWindowId: sender.tab?.windowId };
+    const request = { platform: msg.platform, videoId: msg.videoId, label: msg.label, tag: msg.tag, wallWindowId: sender.tab?.windowId };
     running = captureSourceScreenshot(request, notify).finally(() => { running = null; });
     running.then(sendResponse, (err) => sendResponse({ ok: false, reason: err.reason || 'failed', message: err.reason ? err.message : `Screenshot capture failed: ${err.message || err}` }));
     return true; // answered when the capture ends

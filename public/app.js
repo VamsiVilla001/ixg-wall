@@ -27,6 +27,8 @@
     memLimitMB: 500,           // managed wall window's tab over this: offload memory (0 = off)
     offloadEveryMin: 60,       // where memory can't be measured, offload this often (0 = off)
     timelineSpanMin: 15,       // how much of each stream the timelines show (0 = all YouTube keeps)
+    autoCapture: true,         // source screenshots at each feed's CCV peaks and when it ends (Feed Meter)
+    autoCaptureMin: 2,         // at most one CCV-peak screenshot per feed this often (2 or 4 in Settings)
   };
   const LIMITS = {
     checkIntervalSec: [1, 30],
@@ -40,6 +42,7 @@
     syncMarginSec: [0, 10],
     memLimitMB: [0, 16000],
     offloadEveryMin: [0, 1440],
+    autoCaptureMin: [1, 60],
   };
   const FEED_QUALITIES = ['large', 'hd720', 'hd1080'];
   const OFFSCREEN_RELEASE_MS = 60000; // a feed scrolled out of view keeps its quality this long, then drops to 480p
@@ -706,8 +709,8 @@
     return `${host}/embed/${source.id}?${params}`;
   }
 
-  function logEvent(tile, text, level = 'info') {
-    events.unshift({ t: new Date(), id: tile?.stream.id, who: tile ? tile.stream.label : 'Wall', text, level });
+  function logEvent(tile, text, level = 'info', at = null) {
+    events.unshift({ t: at ? new Date(at) : new Date(), id: tile?.stream.id, who: tile ? tile.stream.label : 'Wall', text, level });
     if (events.length > 300) events.length = 300;
     if (tile) tile.lastEvent = { t: Date.now(), text, level };
     renderLog();
@@ -2662,6 +2665,21 @@
     const now = Date.now();
     for (const t of tiles.values()) t.renderSide(now);
     if (inspected) loadViewerHistory(inspected); // re-renders the sheet with the new reading
+    takeAutoCapture(); // a CCV peak or an ended stream the backend queued
+    // The backend's record of what it queued, dropped, saved or failed: into this window's
+    // event log, except what this window did itself (already logged as it happened).
+    if (state.captureLogBoot && state.captureLogBoot !== captureLogBoot) {
+      // A restarted backend numbers its record afresh: read it from the start.
+      captureLogBoot = state.captureLogBoot;
+      captureLogSeen = 0;
+    }
+    const entries = Array.isArray(state.captureLog) ? state.captureLog.filter((e) => e && e.seq > captureLogSeen) : [];
+    for (const e of entries) {
+      captureLogSeen = Math.max(captureLogSeen, e.seq);
+      if (e.client && e.client === clientId) continue;
+      const tile = [...tiles.values()].find((t) => t.stream.source.id === e.id);
+      logEvent(tile || { stream: { id: null, label: String(e.label || e.id || 'Feed').slice(0, 80) } }, String(e.text || '').slice(0, 400), ['info', 'warn', 'bad'].includes(e.level) ? e.level : 'info', e.t);
+    }
   }
 
   // Saved from Settings (Save key / Enter) or the Stats sheet. An empty key turns stats off.
@@ -5305,10 +5323,31 @@
   // Feed Meter extension (extension/capture.js). The page can't reach the extension's
   // worker itself, so the request goes through one of the wall's players (courier.js).
   const CAPTURE_TIMEOUT_MS = 120000;
-  const shot = { job: null, tile: null, timer: 0 };
+  let captureLogSeen = 0; // the backend's screenshot record, as far as this window has read it
+  let captureLogBoot = null; // which run of the backend that record is from
+  const shot = { job: null, tile: null, timer: 0, auto: null };
+  const AUTO_REASON = { peak: 'CCV peak', end: 'stream ended' };
+  // What the extension's failures mean for an automatic job: worth handing back (the
+  // extension hiccuped) or not (the source itself is the problem). 'busy' (another screenshot
+  // was being taken in this browser) is handed back too, but isn't counted as a try, and this
+  // window leaves the queue alone for a while so the other capture can finish.
+  const AUTO_RETRY = new Set(['extension']);
+  const AUTO_BUSY_WAIT_MS = 20000;
+  let autoBusyUntil = 0;
+  const capturePost = (url, body) => api(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
+    body: JSON.stringify(body),
+  });
 
-  function shotStatus(text, tone = '') {
+  // The sheet shows a manual capture, and an automatic one only while it's open on that feed:
+  // moved to another feed, it shows nothing of the capture, not a stale progress line.
+  function shotStatus(text, tone = '', forAuto = false) {
     const el = $('#fs-shot-status');
+    if (forAuto && inspected !== shot.tile) {
+      el.hidden = true;
+      return;
+    }
     setText(el, text);
     if (tone) el.dataset.tone = tone;
     else delete el.dataset.tone;
@@ -5322,30 +5361,85 @@
     return t ? { win: t.frame.querySelector('iframe').contentWindow, origin: t.host } : null;
   }
 
-  function endShot(text, tone) {
+  // Why this page can't take a screenshot now, or '' when it can.
+  function captureBlocker() {
+    if (!meterActive()) return 'Needs the IXG Wall Feed Meter 1.3 or newer in this browser (Settings → Install Feed Meter)';
+    if (meterSeen.version && newerVersion('1.3.0', meterSeen.version)) return `This browser has Feed Meter ${meterSeen.version}; screenshots need 1.3.0 or newer: update it`;
+    if (!courierFrame()) return 'No player to send the request through: start a feed first';
+    return '';
+  }
+
+  function endShot(text, tone, { retry = false, busy = false, outcome = '', detail = '' } = {}) {
     clearTimeout(shot.timer);
+    const auto = shot.auto;
+    shotStatus(text, tone, !!auto);
     shot.job = null;
     shot.tile = null;
+    shot.auto = null;
     $('#fs-shot').disabled = false;
-    shotStatus(text, tone);
+    if (auto) {
+      if (busy) autoBusyUntil = Date.now() + AUTO_BUSY_WAIT_MS;
+      capturePost('/api/capture/result', { job: auto.job, retry, busy, outcome, detail, client: clientId })
+        .catch(() => { /* the backend offers it again once the claim runs out */ })
+        .finally(() => setTimeout(takeAutoCapture, busy ? AUTO_BUSY_WAIT_MS + 1000 : 1000)); // the next one waiting, if any
+    }
+  }
+
+  // tile: the feed on this wall; auto: the backend's job, when it's an automatic one.
+  function startShot(tile, { videoId, label, auto = null }) {
+    shot.job = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    shot.tile = tile;
+    shot.auto = auto;
+    $('#fs-shot').disabled = true;
+    shotStatus(auto ? `Automatic screenshot (${AUTO_REASON[auto.reason]}): opening source…` : 'Opening source…', '', !!auto);
+    const courier = courierFrame();
+    // tag (Feed Meter 1.5): PEAK or END in the file name; older versions leave it out.
+    courier.win.postMessage({ type: 'ixg-wall-capture', v: 1, job: shot.job, platform: 'youtube', videoId, label, tag: auto ? auto.reason.toUpperCase() : '' }, courier.origin);
+    shot.timer = setTimeout(() => {
+      logEvent(tile, `${auto ? 'Automatic source' : 'Source'} screenshot: no answer from the Feed Meter in 2 min`, 'bad');
+      endShot('Screenshot capture failed: no answer from the Feed Meter. Reload the extension in chrome://extensions and try again', 'bad', { retry: true, outcome: 'failed', detail: 'no answer from the Feed Meter in 2 min' });
+    }, CAPTURE_TIMEOUT_MS);
   }
 
   function captureSourceScreenshot(tile) {
-    if (shot.job) return shotStatus('A screenshot is already being captured: wait for it to finish', 'bad');
-    if (!meterActive()) return shotStatus('Needs the IXG Wall Feed Meter 1.3 or newer in this browser (Settings → Install Feed Meter)', 'bad');
-    if (meterSeen.version && newerVersion('1.3.0', meterSeen.version)) return shotStatus(`This browser has Feed Meter ${meterSeen.version}; screenshots need 1.3.0 or newer: update it`, 'bad');
+    if (shot.job) return shotStatus(shot.auto ? `An automatic screenshot of ${shot.tile.stream.label} is being captured: wait for it to finish` : 'A screenshot is already being captured: wait for it to finish', 'bad');
+    const blocker = captureBlocker();
+    if (blocker) return shotStatus(blocker, 'bad');
     if (tile.stream.source.kind !== 'video' || !/^[\w-]{11}$/.test(tile.stream.source.id)) return shotStatus('Source URL unavailable for this feed', 'bad');
-    const courier = courierFrame();
-    if (!courier) return shotStatus('No player to send the request through: start a feed first', 'bad');
-    shot.job = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    shot.tile = tile;
-    $('#fs-shot').disabled = true;
-    shotStatus('Opening source…');
-    courier.win.postMessage({ type: 'ixg-wall-capture', v: 1, job: shot.job, platform: 'youtube', videoId: tile.stream.source.id, label: tile.stream.label }, courier.origin);
-    shot.timer = setTimeout(() => {
-      logEvent(tile, 'Source screenshot: no answer from the Feed Meter in 2 min', 'bad');
-      endShot('Screenshot capture failed: no answer from the Feed Meter. Reload the extension in chrome://extensions and try again', 'bad');
-    }, CAPTURE_TIMEOUT_MS);
+    startShot(tile, { videoId: tile.stream.source.id, label: tile.stream.label });
+  }
+
+  // ---- Automatic source screenshots: the backend queues them when a feed's CCV reaches a
+  // new high or its broadcast ends (backend/auto-capture.js). An admin's page that can take
+  // one claims it (the first claim wins, so one window takes each) and reports back.
+  let autoClaiming = false;
+  async function takeAutoCapture() {
+    if (autoClaiming || shot.job || !isAdmin() || !settings.autoCapture || location.protocol === 'file:' || Date.now() < autoBusyUntil) return;
+    const open = (ytState?.captures || []).filter((c) => c && /^[\w-]{11}$/.test(c.id));
+    if (!open.length || captureBlocker()) return;
+    autoClaiming = true;
+    try {
+      for (const c of open) {
+        const res = await capturePost('/api/capture/claim', { job: c.job, client: clientId });
+        if (!res.ok) continue; // another window took it, or it's no longer due
+        const job = await res.json();
+        const tile = [...tiles.values()].find((t) => t.stream.source.id === job.id) || { stream: { id: null, label: job.label || job.id } };
+        if (shot.job || captureBlocker()) {
+          // A manual capture or a lost player got here first: hand it straight back.
+          const why = shot.job ? 'a manual capture was running' : captureBlocker();
+          logEvent(tile, `Automatic source screenshot (${AUTO_REASON[job.reason] || job.reason}) handed back: ${why}`, 'warn');
+          capturePost('/api/capture/result', { job: job.job, retry: true, detail: why, client: clientId }).catch(() => {});
+          return;
+        }
+        logEvent(tile, `Automatic source screenshot: ${AUTO_REASON[job.reason] || job.reason}${job.ccv != null ? ` at ${fmtInt(job.ccv)} watching` : ''}`);
+        startShot(tile, { videoId: job.id, label: tile.stream.label, auto: job });
+        return;
+      }
+    } catch {
+      // backend offline: the jobs wait there
+    } finally {
+      autoClaiming = false;
+    }
   }
 
   window.addEventListener('message', (e) => {
@@ -5353,17 +5447,22 @@
     if (!d || d.type !== 'ixg-capture' || d.v !== 1 || !shot.job || d.job !== shot.job) return;
     if (![...tiles.values()].some((t) => e.source === t.frame.querySelector('iframe')?.contentWindow && e.origin === t.host)) return;
     const tile = shot.tile;
+    const auto = !!shot.auto;
+    const kind = auto ? `Automatic source screenshot (${AUTO_REASON[shot.auto.reason] || shot.auto.reason})` : 'Source screenshot';
     const text = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : '');
-    if (d.state === 'progress') return shotStatus(text(d.message) || 'Working…');
+    if (d.state === 'progress') return shotStatus(text(d.message) || 'Working…', '', auto);
     if (d.state === 'done') {
       const f = d.facts && typeof d.facts === 'object' ? d.facts : {};
       const what = [text(f.account, 60), f.live ? 'LIVE' : '', f.ccv ? `${text(f.ccv, 20)} watching` : 'CCV not shown'].filter(Boolean).join(' · ');
-      logEvent(tile, `Source screenshot saved: ${text(d.file, 300)}${what ? ` (${what})` : ''}`);
-      return endShot(`Screenshot saved: ${text(d.file, 300)}${d.note ? ` · ${text(d.note)}` : ''}`, 'ok');
+      logEvent(tile, `${kind} saved: ${text(d.file, 300)}${what ? ` (${what})` : ''}`);
+      return endShot(`Screenshot saved: ${text(d.file, 300)}${d.note ? ` · ${text(d.note)}` : ''}`, 'ok', { outcome: 'saved', detail: `${text(d.file, 300)}${what ? ` (${what})` : ''}` });
     }
     if (d.state === 'failed') {
-      logEvent(tile, `Source screenshot failed: ${text(d.message) || 'unknown reason'}`, 'bad');
-      return endShot(text(d.message) || 'Screenshot capture failed', 'bad');
+      const busy = auto && d.reason === 'busy';
+      const retry = busy || (auto && AUTO_RETRY.has(d.reason));
+      if (busy) logEvent(tile, `${kind}: the Feed Meter is taking another screenshot; this one waits its turn`, 'warn');
+      else logEvent(tile, `${kind} failed: ${text(d.message) || 'unknown reason'}${retry ? '; will try again' : ''}`, 'bad');
+      return endShot(text(d.message) || 'Screenshot capture failed', busy ? 'warn' : 'bad', { retry, busy, outcome: 'failed', detail: text(d.message) });
     }
   });
 
@@ -5422,6 +5521,7 @@
       updateSummary();
     }
     if (key === 'bandwidthMbps') allocate();
+    if (key === 'autoCapture') takeAutoCapture();
     if (key === 'ytPollSec') renderYtStatus(); // saving the wall hands the new interval to the backend
     if (key === 'priorityQuality') {
       for (const t of tiles.values()) {

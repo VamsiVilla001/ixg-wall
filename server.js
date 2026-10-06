@@ -18,6 +18,7 @@ const { Telemetry } = require('./backend/telemetry');
 const { WallBrowser, DECODE_MODES, PROFILE_DIR } = require('./backend/wall-browser');
 const { WallStore } = require('./backend/wall-store');
 const { YouTubeStats } = require('./backend/youtube');
+const { AutoCapture } = require('./backend/auto-capture');
 const { readAsset } = require('./backend/assets');
 
 const { PORT, HOST, HOSTED, PUBLIC_URL } = config;
@@ -45,7 +46,7 @@ const TYPES = {
 const PUBLIC_PATHS = new Set(['/login', '/join', '/style.css', '/ixg-tokens.css', '/ixg-logo.svg', '/healthz', '/api/login', '/api/join', '/api/logout']);
 // Wall settings only an admin may change: a user's save keeps the admin's values. The poll
 // interval spends the admin's YouTube quota; the rest are the wall computer's own.
-const ADMIN_SETTINGS = ['ytPollSec', 'memLimitMB', 'offloadEveryMin'];
+const ADMIN_SETTINGS = ['ytPollSec', 'memLimitMB', 'offloadEveryMin', 'autoCapture', 'autoCaptureMin'];
 
 // Whether a wall a user wants to save holds any feed the admin never put there.
 function addsFeeds(wall) {
@@ -77,6 +78,8 @@ const credentials = new GoogleCredentials({ secrets, publicUrl: PUBLIC_URL, port
 const youtube = new YouTubeStats({ wallStore, credentials });
 const ingest = new IngestHealth({ credentials, wallStore, pollMs: () => youtube.pollMs() });
 youtube.ingest = ingest; // its state rides along with the YouTube numbers
+// Automatic source screenshots: decided here, taken by an admin's page with the Feed Meter.
+const autoCapture = new AutoCapture({ youtube, ingest, wallStore });
 const sseClients = new Map(); // response -> { role, linkId } of whoever opened it
 const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: false, hosted: true });
 
@@ -86,7 +89,7 @@ const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: f
 // A link made without YouTube gets the state of a wall with no key at all.
 function youtubeFor(role, link = null) {
   const s = youtube.state();
-  if (role === 'admin') return s;
+  if (role === 'admin') return { ...s, captures: autoCapture.open(), captureLog: autoCapture.entries(), captureLogBoot: autoCapture.boot };
   if (link && link.youtube === false) {
     return { status: 'off', error: '', key: { set: false }, ingest: null, updatedAt: 0, pollMs: s.pollMs, units: { used: 0, limit: 0 }, total: { now: null }, videos: {} };
   }
@@ -137,8 +140,15 @@ function broadcastYoutube() {
   }
 }
 
-youtube.on('update', broadcastYoutube);
-ingest.on('update', broadcastYoutube);
+youtube.on('update', () => {
+  autoCapture.check();
+  broadcastYoutube();
+});
+ingest.on('update', () => {
+  autoCapture.check();
+  broadcastYoutube();
+});
+autoCapture.on('change', broadcastYoutube);
 ingest.on('quiet', () => youtube.pollSoon()); // an encoder stopped: has YouTube ended the broadcast?
 credentials.on('key', () => youtube.keyChanged());
 credentials.on('change', () => {
@@ -371,6 +381,19 @@ async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/youtube/history' && req.method === 'GET') {
     const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
     return sendJson(res, 200, { id, series: youtube.series(id) });
+  }
+  // ---- Automatic source screenshots: a page claims a job, takes it, and reports back ----
+  if ((urlPath === '/api/capture/claim' || urlPath === '/api/capture/result') && req.method === 'POST') {
+    if (!admin) return adminOnly(res);
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const job = String(body.job || '');
+    const client = String(body.client || '').slice(0, 40);
+    if (urlPath === '/api/capture/claim') {
+      const claimed = autoCapture.claim(job, client);
+      return claimed ? sendJson(res, 200, claimed) : sendJson(res, 409, { error: 'Taken by another window, or no longer due' });
+    }
+    return sendJson(res, 200, { ok: autoCapture.finish(job, { retry: body.retry === true, busy: body.busy === true, outcome: String(body.outcome || ''), detail: String(body.detail || ''), client }) });
   }
   if (urlPath === '/api/status' && req.method === 'GET') {
     return sendJson(res, 200, { telemetry: telemetry.latest, browser: browserStatus() });

@@ -16,6 +16,12 @@ test('file names carry account, title, CCV and time, with Windows-safe character
   assert.equal(messy, 'Rubix_IXG_Test_[HINDI]_BMSD_2026_Day_2_#BGMILIVE_live_1.2KCCV_2026-10-05_205215.png');
   assert.doesNotMatch(messy, /[<>:"/\\|?*]/);
   assert.equal(fileName({}, when), 'Unknown_Unknown_CCV-NA_2026-10-05_205215.png');
+  // Automatic ones say why; anything else in the tag is left out.
+  assert.equal(fileName({ account: 'KRAFTON INDIA ESPORTS', title: 'BGMI FINALS', ccv: '124,382' }, when, 'PEAK'),
+    'KRAFTON_INDIA_ESPORTS_BGMI_FINALS_124382CCV_PEAK_2026-10-05_205215.png');
+  assert.equal(fileName({ account: 'KRAFTON INDIA ESPORTS', title: 'BGMI FINALS', ccv: null }, when, 'END'),
+    'KRAFTON_INDIA_ESPORTS_BGMI_FINALS_CCV-NA_END_2026-10-05_205215.png');
+  assert.equal(fileName({ account: 'A', title: 'B', ccv: '5' }, when, '../x'), 'A_B_5CCV_2026-10-05_205215.png');
   assert.ok(fileName({ account: 'a'.repeat(100), title: 'b'.repeat(200), ccv: '5' }, when).length < 140, 'long names are cut');
   assert.equal(FOLDER, 'IXG-Wall/Screenshots');
 });
