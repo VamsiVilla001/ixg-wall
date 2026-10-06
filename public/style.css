@@ -479,8 +479,6 @@ body.document-wall.wall-stats-view { height: 100dvh; overflow: hidden; }
 .grid.preset > .tile.page-start { scroll-snap-align: start; }
 .document-wall .grid.scroll, .document-wall .grid.preset { overflow: visible; }
 .grid.scroll .label, .grid.preset .label { font-size: 15px; }
-/* Main (into the biggest box) only means something in a preset layout. */
-.grid:not(.preset) .act-main { display: none; }
 /* Dragging a feed: the lifted box rides above the others with a shadow and a ring, while the
    others slide out of its way (app.js). The players mustn't swallow the pointer meanwhile. */
 .tile .info { cursor: grab; user-select: none; }

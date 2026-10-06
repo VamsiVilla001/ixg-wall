@@ -973,8 +973,7 @@
         const btn = e.target.closest('button[data-act]');
         if (!btn) return;
         const act = btn.dataset.act;
-        if (act === 'main') makeMain(this);
-        else if (act === 'priority') togglePriority(this);
+        if (act === 'priority') togglePriority(this);
         else if (act === 'resync') this.resync('manual');
         else if (act === 'reload') this.reload('manual', 'info', true);
         else if (act === 'link') changeLink(this);
@@ -3879,15 +3878,6 @@
     });
   }
 
-  // Into the biggest box of the page it's on, trading places with the feed there. (Outside a
-  // preset, the wall's first place.)
-  function makeMain(tile) {
-    const k = settings.layoutMode === 'preset' ? layoutUnits(activeLayout()).length : streams.length;
-    const i = streams.indexOf(tile.stream);
-    const first = tiles.get(streams[i - (i % k)]?.id);
-    if (first && first !== tile) swapFeeds(tile, first);
-  }
-
   // ---- Dragging a feed to a new place ---------------------------------------------------
   // The box follows the pointer (a transform, so nothing re-lays-out), and the wall reorders
   // live under it: the others slide to make room (FLIP: measure, re-place, animate the
@@ -4039,17 +4029,6 @@
       feedDragEnd(e);
     }
   }, true);
-
-  // Swaps two feeds' places on the wall: how a feed becomes the main one in a preset layout.
-  function swapFeeds(a, b) {
-    const i = streams.indexOf(a.stream);
-    const j = streams.indexOf(b.stream);
-    if (i < 0 || j < 0 || i === j) return;
-    [streams[i], streams[j]] = [streams[j], streams[i]];
-    store.save();
-    updateLayout();
-    logEvent(null, `Swapped places: ${a.stream.label} ↔ ${b.stream.label}`);
-  }
 
   // Settings → Layout: a to-scale miniature of the wall as configured. Each tile shows its
   // video and stats card; tiles past the bottom of the screen are faded under a fold line.
