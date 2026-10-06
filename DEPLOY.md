@@ -140,7 +140,9 @@ Share the wall password only with admins. Everyone else gets a user link: the si
 ## The wall laptops
 
 - **Open the wall in Chrome or Edge at the wall's address**, and sign in once per browser profile.
-- **Install the IXG Wall Feed Meter extension.** The wall asks for it on first open, with a download from the wall's own address and three steps (`extension/README.md`). Without it, per-feed bitrate is an estimate, and "Feeds getting" isn't available.
+- **Install the IXG Wall Feed Meter extension.** The wall asks for it on first open, with a download from the wall's own address and three steps (`extension/README.md`). Without it, per-feed bitrate is an estimate, and "Feeds getting" isn't available. After an update that changes the extension (the wall says so), download it again and reload it in `chrome://extensions`.
+- **Automatic source screenshots** (Settings → Source screenshots) are decided by the server, at each feed's new CCV high and when a broadcast ends, but taken by a browser: an **admin's** wall with the Feed Meter. They land in that computer's `Downloads/IXG-Wall/Screenshots`. Users' browsers never take them. Keep one admin wall open during an event; if none is, each screenshot waits 30 minutes and is dropped, and the event log (Wall stats) says so.
+- **Viewer graphs on the timelines** come from the server, which records every feed's count from the moment the feed is on the wall, whether or not anyone has the wall open. Add the day's links before the streams go live to get each stream from its start; the server keeps 24 hours.
 - **Smoothest playback on low-spec laptops: decode video in software.** A website can't change how the browser decodes video. On the benchmark laptop (Ryzen 5 4600H with Radeon graphics), software decoding dropped 0% of frames at 30 feeds, against 4–7% on its GPU. To get software decoding, open the wall from a desktop shortcut with this target (one line):
 
   ```
