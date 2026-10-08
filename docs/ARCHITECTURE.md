@@ -18,7 +18,10 @@ There are no runtime dependencies: Node's standard library on the server, plain 
 server.js               HTTP server: static files, sign-in gate, JSON API, SSE stream
 backend/
   config.js             every environment setting, validated at startup
-  auth.js               sign-in: signed session cookie naming the role (admin | user), lockout; the
+  accounts.js           Microsoft 365 sign-in (the OneDrive app registration, openid + User.Read) and the
+                        allow-list of accounts with roles; optionally the whole organisation as operators
+  auth.js               sign-in: signed session cookie naming the role (admin | operator | user) and the
+                        link or account it came from, lockout; the
                         cookie's name carries the port, so two walls on one computer don't sign each
                         other out (browsers don't keep cookies apart by port)
   user-links.js         the links that sign browsers in as users (kept in secrets.json)
@@ -187,7 +190,7 @@ YouTube embed limits, measured on the wall laptops:
 
 Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` header and a same-site `Origin`.
 
-**Roles.** A password sign-in is an admin; a user link is a user. Without a password, every request is an admin's. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
+**Roles.** A password sign-in is an admin; a link is an operator or a user (the link's role). Without a password, every request is an admin's. The Admin center (`/admin`, the same page in a mode that shows only the `[data-admin-center]` sections and no wall) is served to admins alone; the integrations, links and screenshot destinations live there and never show on the wall. An operator (`canOperate`) adds feeds, runs sessions, changes screenshot settings and takes screenshots; a user does none of those. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
 
 | Method & path | What |
 |---|---|

@@ -51,6 +51,7 @@
       </label>
       <p class="form-error" id="error" role="alert" hidden></p>
       <button class="btn btn-accent" type="submit" id="submit">Sign in</button>
+      <a class="btn btn-outline" id="microsoft" href="/api/auth/microsoft/start" hidden>Sign in with Microsoft</a>
       <p class="hint" id="hint"></p>
     </form>
   </main>
@@ -59,8 +60,19 @@
       'use strict';
       const $ = (id) => document.getElementById(id);
       // Back to the page that sent us here, but only a path on this site.
-      const raw = new URLSearchParams(location.search).get('next') || '/';
+      const params = new URLSearchParams(location.search);
+      const raw = params.get('next') || '/';
       const next = /^\/(?![/\\])/.test(raw) ? raw : '/';
+      // Microsoft 365 sign-in, when the admin set it up; a refusal comes back here with the reason.
+      fetch('/api/login/options').then((r) => r.json()).then((o) => {
+        if (!o.microsoft) return;
+        $('microsoft').hidden = false;
+        $('microsoft').href = `/api/auth/microsoft/start?next=${encodeURIComponent(next)}`;
+      }).catch(() => {});
+      if (params.get('error')) {
+        $('error').textContent = params.get('error');
+        $('error').hidden = false;
+      }
       const HINTS = {
         admin: 'Admins hold the wall password and manage the YouTube key, the channel sign-in and user links. This browser stays signed in for 30 days.',
         user: 'Open the link the wall\'s admin shared with you, or paste it here. No password needed.',

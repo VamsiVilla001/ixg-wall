@@ -246,6 +246,8 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
   assert.equal((await shotsPost({ layout: 'by-feed' })).status, 400);
   assert.equal((await shotsPost({ feedNames: 'initials' })).status, 400);
   assert.equal((await shotsPost({ folder: 'relative/path' })).status, 400);
+  assert.equal((await shotsPost({ slackPost: 'photo' })).status, 400);
+  assert.equal((await (await shotsPost({ slackPost: 'file' })).json()).shots.slackPost, 'file');
   const set = await (await shotsPost({ layout: 'session-feed', feedNames: 'full' })).json();
   assert.equal(set.shots.layout, 'session-feed');
   assert.equal(set.shots.feedNames, 'full');
@@ -289,7 +291,7 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
   assert.deepEqual(current.streams.map((s) => s.label), ['A', 'B'], 'the seeded live session is the default again');
   const added = await put({ ...current, streams: [...current.streams, feed('ddddddddddd', 'D')] });
   assert.equal(added.status, 403);
-  assert.match((await added.json()).error, /admin can add feeds/);
+  assert.match((await added.json()).error, /admin or an operator can add feeds/);
   assert.equal((await put({ ...current, streams: [feed('ccccccccccc', 'C'), current.streams[1], current.streams[0]] })).status, 200, 'an archived session\'s feed comes back, and feeds reorder');
   assert.deepEqual((await (await user('/api/wall')).json()).wall.streams.map((s) => s.label), ['C', 'B', 'A']);
   assert.equal((await put({ ...current, streams: [current.streams[1]] })).status, 200, 'removing feeds');
@@ -323,7 +325,7 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
 
 test('a session cookie can\'t be edited from user to admin', async () => {
   const made = await fetch(`${hosted.base}/api/links`, { method: 'POST', headers: headers({ 'X-IXG-Wall': '1' }), body: JSON.stringify({ name: 'Edit test', days: 7 }) });
-  const [link] = (await made.json()).links;
+  const link = (await made.json()).links.find((l) => l.name === 'Edit test');
   assert.ok(Date.parse(link.expiresAt) > Date.now() + 6 * 86400e3);
   const joined = await fetch(`${hosted.base}/api/join`, { method: 'POST', headers: { 'X-IXG-Wall': '1' }, body: JSON.stringify({ link: link.url }) });
   const userCookie = joined.headers.get('set-cookie').split(';')[0];
@@ -384,6 +386,47 @@ test('a link made for one session opens that session and sees nothing of another
   assert.equal((await as(`/api/wall?session=${a.id}`)).status, 200);
   assert.equal((await admin('/api/links/revoke', { id: l.id })).status, 200);
   assert.equal((await admin('/api/sessions/archive', { id: other.id })).status, 200);
+});
+
+test('an operator link runs the wall (feeds, sessions, screenshots) with no way into the Admin center', async () => {
+  const admin = (p, body) => fetch(`${hosted.base}${p}`, body === undefined ? { headers: headers() }
+    : { method: 'POST', headers: headers({ 'X-IXG-Wall': '1' }), body: JSON.stringify(body) });
+  const join = (body) => fetch(`${hosted.base}/api/join`, { method: 'POST', headers: { 'X-IXG-Wall': '1' }, body: JSON.stringify(body) });
+  const made = await admin('/api/links', { name: 'Stream manager', role: 'operator' });
+  assert.equal(made.status, 200);
+  const l = (await made.json()).links.find((x) => x.name === 'Stream manager');
+  assert.equal(l.role, 'operator');
+  const joined = await join({ link: l.url });
+  assert.equal((await joined.json()).role, 'operator');
+  const c = joined.headers.get('set-cookie').split(';')[0];
+  const op = (p, opts = {}) => fetch(`${hosted.base}${p}`, { ...opts, headers: { Cookie: c, 'Content-Type': 'application/json', 'X-IXG-Wall': '1', ...(opts.headers || {}) }, redirect: 'manual' });
+  const config = await (await op('/api/config')).json();
+  assert.equal(config.role, 'operator');
+  assert.equal(config.canOperate, true);
+  assert.equal(config.shots, null, 'nothing of the destinations');
+  // Runs the wall: adds a feed, turns screenshots off, starts and archives a session; the poll interval stays the admin's.
+  const { wall } = await (await op('/api/wall')).json();
+  const feed = (id, label) => ({ id: `s-${id}`, source: { kind: 'video', id }, label });
+  const put = await op('/api/wall', { method: 'PUT', body: JSON.stringify({ wall: { ...wall, streams: [...wall.streams, feed('fffffffffff', 'F')], settings: { ...wall.settings, autoCapture: false, ytPollSec: 15 } } }) });
+  assert.equal(put.status, 200);
+  const after = (await (await op('/api/wall')).json()).wall;
+  assert.ok(after.streams.some((x) => x.label === 'F'), 'an operator adds feeds');
+  assert.equal(after.settings.autoCapture, false, 'and changes screenshot settings');
+  assert.notEqual(after.settings.ytPollSec, 15, 'but not the poll interval');
+  const started = await op('/api/sessions', { method: 'POST', body: JSON.stringify({ name: 'Operator event' }) });
+  assert.equal(started.status, 200);
+  const sid = (await started.json()).session.id;
+  assert.equal((await op('/api/sessions/archive', { method: 'POST', body: JSON.stringify({ id: sid }) })).status, 200);
+  assert.notEqual((await op('/api/capture/now', { method: 'POST', body: JSON.stringify({ id: 'aaaaaaaaaaa' }) })).status, 403, 'may take a screenshot');
+  // No integrations, no links, no Admin center: blocked on the server.
+  for (const p of ['/api/youtube/key', '/api/youtube/oauth/client', '/api/slack', '/api/shots', '/api/gdrive', '/api/onedrive/client', '/api/links']) {
+    assert.equal((await op(p, { method: 'POST', body: '{}' })).status, 403, p);
+  }
+  assert.equal((await op('/api/links')).status, 403);
+  assert.equal((await op('/admin')).headers.get('location'), '/', 'the Admin center sends an operator to the wall');
+  assert.equal((await fetch(`${hosted.base}/admin`, { headers: { Cookie: cookie } })).status, 200, 'and opens for an admin');
+  assert.equal((await admin('/api/links/revoke', { id: l.id })).status, 200);
+  assert.equal((await op('/api/wall')).status, 401, 'revoked: signed out');
 });
 
 test('two walls on one computer keep separate sessions: the cookie is named per port', async () => {

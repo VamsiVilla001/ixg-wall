@@ -1,6 +1,6 @@
 // Tries something that may fail for a while (a cloud service, a rate limit, the network),
 // waiting longer each time, and gives up only on an error that waiting won't fix or after
-// the last wait. Resolves { ok, tries, error? }; never throws.
+// the last wait. Resolves { ok, tries, value? (what fn resolved), error? }; never throws.
 const WAITS_MS = [10000, 30000, 90000, 5 * 60000, 10 * 60000];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -13,8 +13,8 @@ async function retrying(fn, { waits = WAITS_MS, final = () => false, onRetry = (
   for (;;) {
     tries += 1;
     try {
-      await fn();
-      return { ok: true, tries };
+      const value = await fn();
+      return { ok: true, tries, value };
     } catch (err) {
       const wait = err?.retryAfterMs ?? waits[tries - 1];
       if (final(err)) return { ok: false, tries, error: String(err?.message || err) };

@@ -471,4 +471,4 @@ class Page {
   }
 }
 
-module.exports = { SourceCapture, readableName, languageOf, sessionFolder, feedFolder, dayFolder, shotFolder, defaultFolder, LAYOUTS, FEED_NAMES, PRELOAD_MAX };
+module.exports = { SourceCapture, readableName, languageOf, sessionFolder, feedFolder, shortFeedName, dayFolder, shotFolder, defaultFolder, LAYOUTS, FEED_NAMES, PRELOAD_MAX };

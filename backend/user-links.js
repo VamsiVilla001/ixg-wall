@@ -1,5 +1,7 @@
-// User links: the only way into a wall as a user. An admin names a link in Settings and
-// shares it; whoever opens it is signed in as a user. A user operates the wall. The admin
+// Links: the only way into a wall without the password. An admin names a link in the Admin
+// center and shares it; whoever opens it is signed in with the link's role: an operator
+// (runs the wall: feeds, sessions, screenshots; no integrations) or a user (operates the
+// wall, adds no feeds). A user operates the wall. The admin
 // decides when making a link whether it ships the YouTube numbers and ingest health
 // (`youtube`, on by default): those are read with the admin's API key and channel sign-ins,
 // which stay out of users' pages either way (server.js strips and blocks them). A link can
@@ -36,13 +38,15 @@ class UserLinks {
       expired: !!l.expiresAt && Date.parse(l.expiresAt) <= now,
       youtube: l.youtube !== false,
       session: l.session || null,
+      role: l.role === 'operator' ? 'operator' : 'user',
       url: linkUrl(publicUrl, l.token),
     }));
   }
 
-  // { name, days, youtube, session }: days 0 or missing = until revoked; youtube false = the
-  // link carries no YouTube numbers or ingest health; session = the one session it opens.
-  create({ name, days, youtube, session } = {}) {
+  // { name, days, youtube, session, role }: days 0 or missing = until revoked; youtube false
+  // = the link carries no YouTube numbers or ingest health; session = the one session it
+  // opens; role 'operator' or (the default) 'user'.
+  create({ name, days, youtube, session, role } = {}) {
     const label = String(name || '').trim().slice(0, NAME_MAX);
     if (!label) return { error: 'Give the link a name, e.g. who it\'s for.' };
     if (this.all().length >= MAX_LINKS) return { error: `There are already ${MAX_LINKS} links: revoke some first.` };
@@ -57,6 +61,7 @@ class UserLinks {
       expiresAt: d ? new Date(now.getTime() + d * 86400e3).toISOString() : null,
       youtube: youtube !== false,
       session: typeof session === 'string' && session ? session : null,
+      role: role === 'operator' ? 'operator' : 'user',
       lastUsedAt: null,
     };
     this.secrets.data.userLinks = [...this.all(), link];

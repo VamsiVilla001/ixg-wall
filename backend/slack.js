@@ -158,6 +158,34 @@ class SlackPoster extends EventEmitter {
     }
   }
 
+  // Queues a short message for the channel (a note about a screenshot archived elsewhere,
+  // with a link to it). Resolves { ok, tries, error? } once it's posted or given up.
+  notify(text) {
+    this.pending += 1;
+    const run = this.queue.then(() => this.sendText(text)).finally(() => { this.pending -= 1; });
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  async sendText(text) {
+    let tries = 0;
+    for (;;) {
+      tries += 1;
+      const s = this.secrets.slack();
+      if (!s) return { ok: false, tries, error: 'Slack isn\'t set up' };
+      try {
+        await this.call('chat.postMessage', { channel: s.channelId, text, unfurl_links: 'false', unfurl_media: 'false' });
+        return { ok: true, tries };
+      } catch (err) {
+        const wait = err.retryAfterMs ?? RETRY_WAITS_MS[tries - 1];
+        if (FINAL.has(err.code)) return { ok: false, tries, error: explain(err.code, s.channelName || s.channelId) };
+        if (wait == null) return { ok: false, tries, error: `${err.message}; gave up after ${tries} tries` };
+        this.emit('retry', { text, tries, waitMs: wait, error: err.message });
+        await sleep(wait);
+      }
+    }
+  }
+
   // Queues a screenshot for the channel. Resolves { ok, tries, error? } once it's posted or given up.
   post({ file, title, comment }) {
     this.pending += 1;

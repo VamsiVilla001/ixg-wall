@@ -54,7 +54,7 @@ const server = http.createServer((req, res) => {
       const text = raw.toString('latin1');
       const meta = JSON.parse(/\r\n\r\n(\{.*?\})\r\n--/s.exec(text)[1]);
       fake.uploads.push({ ...meta, bytes: raw.length, auth: req.headers.authorization, type: req.headers['content-type'] });
-      return json(200, { id: `u${fake.uploads.length}`, name: meta.name });
+      return json(200, { id: `u${fake.uploads.length}`, name: meta.name, webViewLink: `https://drive.google.com/file/d/u${fake.uploads.length}/view` });
     }
     // ---- Microsoft ----
     if (p === '/mstoken') {
@@ -80,7 +80,7 @@ const server = http.createServer((req, res) => {
         if (link.includes('file')) return json(200, { id: 'item2', name: 'notes.txt', file: {}, parentReference: { driveId: 'drive1' } });
         return json(404, { error: { code: 'itemNotFound', message: 'The resource could not be found.' } });
       }
-      if (/\/items\/item1:\/.+:\/content$/.test(p) && req.method === 'PUT') return json(201, { id: 'new', name: 'x' });
+      if (/\/items\/item1:\/.+:\/content$/.test(p) && req.method === 'PUT') return json(201, { id: 'new', name: 'x', webUrl: 'https://tesseract-my.sharepoint.com/personal/ops/Documents/IXG%20Screenshots/x.png' });
       if (/\/items\/item1:\/.+:\/createUploadSession$/.test(p) && req.method === 'POST') return json(200, { uploadUrl: `${base}/graph/upload/session1` });
       if (p === '/graph/upload/session1' && req.method === 'PUT') return json(201, { id: 'big' });
       if (/\/items\/gone:/.test(p)) return json(404, { error: { code: 'itemNotFound', message: 'gone' } });
@@ -160,13 +160,13 @@ test('Google Drive: session/date/feed folders are made once and reused; a hiccup
   drive.waits = [20, 20];
   const before = fake.creates;
   const first = await drive.post({ file: shotFile, relPath: 'Krafton SF Day 1/2026-10-08/Hindi Day 1/[Hindi] - x.png' });
-  assert.deepEqual(first, { ok: true, tries: 1 });
+  assert.deepEqual(first, { ok: true, tries: 1, url: 'https://drive.google.com/file/d/u2/view' }, 'with the file\'s link, for the Slack note');
   assert.equal(fake.creates - before, 3, 'session, day and feed folders made');
   assert.deepEqual(fake.uploads.at(-1).parents, ['f3']);
   assert.equal(fake.uploads.at(-1).name, '[Hindi] - x.png');
   fake.flaky = 1;
   const second = await drive.post({ file: shotFile, relPath: 'Krafton SF Day 1/2026-10-08/Hindi Day 1/[Hindi] - y.png' });
-  assert.deepEqual(second, { ok: true, tries: 2 }, 'one 503, then through');
+  assert.deepEqual(second, { ok: true, tries: 2, url: 'https://drive.google.com/file/d/u3/view' }, 'one 503, then through');
   assert.equal(fake.creates - before, 3, 'the folders were remembered, not made again');
   const other = await drive.post({ file: shotFile, relPath: 'Krafton SF Day 1/2026-10-08/English Day 1/[English] - x.png' });
   assert.equal(other.ok, true);
@@ -222,7 +222,7 @@ test('OneDrive: a screenshot is PUT by path (folders made on the way), a big one
   od.waits = [20, 20];
   fake.graph.length = 0;
   const small = await od.post({ file: shotFile, relPath: 'Krafton SF Day 1\\2026-10-08\\Hindi Day 1\\[Hindi] - x.png' });
-  assert.deepEqual(small, { ok: true, tries: 1 });
+  assert.deepEqual(small, { ok: true, tries: 1, url: 'https://tesseract-my.sharepoint.com/personal/ops/Documents/IXG%20Screenshots/x.png' }, 'with the file\'s link, for the Slack note');
   const put = fake.graph.find((g) => g.method === 'PUT');
   assert.equal(put.path, '/graph/drives/drive1/items/item1:/Krafton%20SF%20Day%201/2026-10-08/Hindi%20Day%201/%5BHindi%5D%20-%20x.png:/content');
   assert.equal(put.bytes, 1000);

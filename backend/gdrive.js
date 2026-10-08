@@ -186,9 +186,9 @@ class GoogleDrive extends EventEmitter {
   }
 
   // Queues a screenshot: `relPath` is its path under the Screenshots folder (session/date/feed/name).
-  // Resolves { ok, tries, error? } once it's uploaded or given up.
-  post({ file, relPath }) {
-    return this.queue.run(() => retrying(async () => {
+  // Resolves { ok, tries, url?, error? } once it's uploaded (url: the file in Drive) or given up.
+  async post({ file, relPath }) {
+    const r = await this.queue.run(() => retrying(async () => {
       let bytes;
       try {
         bytes = fs.readFileSync(file);
@@ -196,8 +196,10 @@ class GoogleDrive extends EventEmitter {
         throw Object.assign(new Error('The screenshot file is gone'), { code: 'file_missing' });
       }
       const parts = relPath.split(/[\\/]/).filter(Boolean);
-      await this.upload({ bytes, name: parts.pop(), relFolders: parts, mime: 'image/png' });
+      const made = await this.upload({ bytes, name: parts.pop(), relFolders: parts, mime: 'image/png' });
+      return made.webViewLink || (made.id ? `https://drive.google.com/file/d/${made.id}/view` : null);
     }, { waits: this.waits, final: (err) => FINAL.has(err?.code), onRetry: (e) => this.emit('retry', { file, ...e }) }));
+    return r.ok ? { ok: true, tries: r.tries, url: r.value } : r;
   }
 
   // The folder for a path under the destination folder, found or made one level at a time.
@@ -233,7 +235,7 @@ class GoogleDrive extends EventEmitter {
       bytes,
       Buffer.from(`\r\n--${boundary}--`),
     ]);
-    return this.call('POST', `${GDRIVE.UPLOAD}/files?${new URLSearchParams({ uploadType: 'multipart', supportsAllDrives: 'true', fields: 'id,name' })}`, body, null, { 'Content-Type': `multipart/related; boundary=${boundary}` });
+    return this.call('POST', `${GDRIVE.UPLOAD}/files?${new URLSearchParams({ uploadType: 'multipart', supportsAllDrives: 'true', fields: 'id,name,webViewLink' })}`, body, null, { 'Content-Type': `multipart/related; boundary=${boundary}` });
   }
 }
 

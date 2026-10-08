@@ -280,16 +280,19 @@ class OneDrive extends EventEmitter {
   }
 
   // Queues a screenshot: `relPath` is its path under the Screenshots folder (session/date/feed/name).
-  post({ file, relPath }) {
-    return this.queue.run(() => retrying(async () => {
+  // Resolves { ok, tries, url?, error? } once it's uploaded (url: the file in OneDrive) or given up.
+  async post({ file, relPath }) {
+    const r = await this.queue.run(() => retrying(async () => {
       let bytes;
       try {
         bytes = fs.readFileSync(file);
       } catch {
         throw Object.assign(new Error('The screenshot file is gone'), { code: 'file_missing' });
       }
-      await this.upload({ bytes, relPath, mime: 'image/png' });
+      const made = await this.upload({ bytes, relPath, mime: 'image/png' });
+      return made.webUrl || null;
     }, { waits: this.waits, final: (err) => FINAL.has(err?.code), onRetry: (e) => this.emit('retry', { file, ...e }) }));
+    return r.ok ? { ok: true, tries: r.tries, url: r.value } : r;
   }
 
   // Into the folder, by path: Graph makes the folders along the way. One PUT up to 4 MB;

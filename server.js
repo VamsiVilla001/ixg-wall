@@ -11,6 +11,7 @@ const config = require('./backend/config');
 const { Auth, clientAddress } = require('./backend/auth');
 const { Secrets } = require('./backend/secrets');
 const { UserLinks, ID_FORMAT } = require('./backend/user-links');
+const { Accounts } = require('./backend/accounts');
 const { GoogleCredentials } = require('./backend/google-credentials');
 const { IngestHealth } = require('./backend/youtube-ingest');
 const feedMeter = require('./backend/extension');
@@ -21,7 +22,7 @@ const { YouTubeStats } = require('./backend/youtube');
 const { StudioAudience } = require('./backend/youtube-studio');
 const { PcvTracker } = require('./backend/pcv');
 const { AutoCapture, BACKEND } = require('./backend/auto-capture');
-const { SourceCapture, readableName, shotFolder, LAYOUTS, FEED_NAMES } = require('./backend/source-capture');
+const { SourceCapture, readableName, shotFolder, shortFeedName, dayFolder, LAYOUTS, FEED_NAMES } = require('./backend/source-capture');
 const { SlackPoster } = require('./backend/slack');
 const { GoogleDrive } = require('./backend/gdrive');
 const { OneDrive } = require('./backend/onedrive');
@@ -49,10 +50,14 @@ const TYPES = {
 };
 // Reachable without signing in: the sign-in page (also what a user link opens), what it
 // loads, and the health check.
-const PUBLIC_PATHS = new Set(['/login', '/join', '/style.css', '/ixg-tokens.css', '/ixg-logo.svg', '/healthz', '/api/login', '/api/join', '/api/logout']);
+const PUBLIC_PATHS = new Set(['/login', '/join', '/style.css', '/ixg-tokens.css', '/ixg-logo.svg', '/healthz', '/api/login', '/api/join', '/api/logout',
+  '/api/login/options', '/api/auth/microsoft/start', '/api/auth/microsoft/callback']);
 // Wall settings only an admin may change: a user's save keeps the admin's values. The poll
 // interval spends the admin's YouTube quota; the rest are the wall computer's own.
 const ADMIN_SETTINGS = ['ytPollSec', 'memLimitMB', 'offloadEveryMin', 'autoCapture', 'autoCaptureMin'];
+// An operator (a link with that role) runs the wall, screenshots included, but the poll
+// interval spends the admin's quota and the memory settings are the wall computer's.
+const OPERATOR_LOCKED = ['ytPollSec', 'memLimitMB', 'offloadEveryMin'];
 
 // Whether a wall a user wants to save holds any feed no session has (live or archived):
 // users don't add feeds, an admin does.
@@ -76,7 +81,12 @@ const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: 
 // OneDrive folder; each checked with its service before it's saved.
 const slack = new SlackPoster({ secrets });
 const userLinks = new UserLinks(secrets);
-const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, port: new URL(PUBLIC_URL).port, linkActive: (id) => userLinks.active(id) });
+// Who may sign in with a Microsoft 365 account, and as what (Admin center → Access).
+const accounts = new Accounts({ secrets, publicUrl: PUBLIC_URL, envAdmins: config.ADMINS });
+// A session goes on while what it came from still grants its role: a link (with that role)
+// or a listed account.
+const principalActive = (role, id) => (role !== 'admin' && userLinks.active(id) && (userLinks.get(id)?.role === 'operator' ? 'operator' : 'user') === role) || accounts.active(role, id);
+const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, port: new URL(PUBLIC_URL).port, principalActive });
 const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED, wallProfile: HOSTED ? '' : PROFILE_DIR });
 const wallBrowser = HOSTED ? null : new WallBrowser({ url: `http://localhost:${PORT}/` });
 // Anyone's YouTube key and Google OAuth client, checked with Google before they're saved.
@@ -137,7 +147,7 @@ function youtubeFor(role, link = null, sessionId = null) {
     return { status: 'off', error: '', key: { set: false }, ingest: null, updatedAt: 0, pollMs: s.pollMs, units: { used: 0, limit: 0 }, total: { now: null }, videos: {} };
   }
   const ing = s.ingest;
-  return {
+  const cut = {
     ...s,
     error: s.error ? 'YouTube data is unavailable right now.' : '',
     key: { set: !!s.key?.set },
@@ -151,6 +161,8 @@ function youtubeFor(role, link = null, sessionId = null) {
       videos: ing.videos,
     },
   };
+  // An operator's page takes screenshots where the server can't (the Feed Meter): the jobs and the record.
+  return role === 'operator' ? { ...cut, captures: autoCapture.open(), captureLog: autoCapture.entries(), captureLogBoot: autoCapture.boot } : cut;
 }
 
 // Walls saved before the key moved to secrets.json kept it in wall.json: move it out, once.
@@ -178,7 +190,7 @@ function broadcastYoutube() {
   const msgs = {};
   for (const [res, { role, linkId, sessionId }] of sseClients) {
     const link = linkId ? userLinks.get(linkId) : null;
-    const cut = `${role === 'admin' ? 'admin' : link?.youtube === false ? 'none' : 'user'}|${sessionId}`;
+    const cut = `${role === 'admin' ? 'admin' : role === 'operator' ? 'operator' : link?.youtube === false ? 'none' : 'user'}|${sessionId}`;
     msgs[cut] ??= `event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link, sessionId))}\n\n`;
     res.write(msgs[cut]);
   }
@@ -262,18 +274,47 @@ function toSlack(kind, id, shot, shotPcv = null, sessionName = '') {
 // Every destination that's set up gets the screenshot: Slack as a post, Google Drive and
 // OneDrive as uploads under the same session/date/feed folders. The record says how each went.
 function deliver(kind, id, shot, shotPcv = null, sessionName = '') {
-  toSlack(kind, id, shot, shotPcv, sessionName);
   const relPath = path.relative(sourceCapture.folder, shot.file);
   const name = path.basename(shot.file);
+  const uploads = [];
   for (const [label, dest] of [['Google Drive', gdrive], ['OneDrive', onedrive]]) {
     if (!dest.configured()) continue;
     autoCapture.note(id, `Screenshot uploading to ${label}: ${name}`, 'info', BACKEND);
-    dest.post({ file: shot.file, relPath }).then((r) => {
+    uploads.push(dest.post({ file: shot.file, relPath }).then((r) => {
       autoCapture.note(id, r.ok ? `Screenshot uploaded to ${label}: ${relPath.replace(/\\/g, '/')}` : `Screenshot not uploaded to ${label}: ${r.error}`, r.ok ? 'info' : 'bad', BACKEND);
       broadcastYoutube();
+      return r.ok && r.url ? { label, url: r.url } : null;
+    }));
+  }
+  // Slack: the screenshot itself, or (the default) a one-line note once the archive has it,
+  // linking the archived file: "2026-10-08 · Hindi Day 1 · 233,375 CCV · new PCV".
+  if (secrets.shots().slackPost === 'file') toSlack(kind, id, shot, shotPcv, sessionName);
+  else if (slack.configured()) {
+    Promise.all(uploads).then((links) => {
+      const text = slackNote(kind, id, shot, shotPcv, sessionName, links.filter(Boolean));
+      slack.notify(text).then((r) => {
+        autoCapture.note(id, r.ok ? `Slack note posted: ${text.replace(/<[^|>]*\|([^>]*)>/g, '$1')}` : `Slack note not posted: ${r.error}`, r.ok ? 'info' : 'bad', BACKEND);
+        broadcastYoutube();
+      });
     });
   }
   broadcastYoutube();
+}
+
+// The note: the day, the feed's short name, the count, why, which session, and where the
+// file is. The count is the PCV the shot was taken for; at the end, the views the page showed.
+function slackNote(kind, id, shot, shotPcv, sessionName, links) {
+  const n = (v) => Number(v).toLocaleString('en-US');
+  const f = shot.facts || {};
+  const label = autoCapture.label(id) || f.title || id;
+  const count = kind === 'peak' && Number.isSafeInteger(shotPcv) ? `${n(shotPcv)} CCV`
+    : kind === 'end' ? (f.views ? `${f.views} views` : f.ccv ? `${f.ccv} CCV` : 'ended')
+      : f.ccv ? `${f.ccv} CCV` : f.views ? `${f.views} views` : 'no count';
+  const why = { peak: 'new PCV', end: 'stream ended', manual: 'on request' }[kind] || kind;
+  const parts = [dayFolder(new Date()), shortFeedName(label) || label, count, why];
+  if (sessionName) parts.push(sessionName);
+  for (const l of links) parts.push(`<${l.url}|Open in ${l.label}>`);
+  return parts.join(' · ');
 }
 
 // Automatic screenshots, taken by the backend one at a time. A browser or network hiccup is
@@ -379,7 +420,8 @@ async function join(req, res) {
   auth.succeeded(addr);
   userLinks.used(link);
   const until = link.expiresAt ? Date.parse(link.expiresAt) : Infinity;
-  sendJson(res, 200, { ok: true, role: 'user', next: link.session ? `/s/${link.session}` : '/' }, { 'Set-Cookie': auth.sessionCookie('user', link.id, until) });
+  const role = link.role === 'operator' ? 'operator' : 'user';
+  sendJson(res, 200, { ok: true, role, next: link.session ? `/s/${link.session}` : '/' }, { 'Set-Cookie': auth.sessionCookie(role, link.id, until) });
 }
 
 const adminOnly = (res) => sendJson(res, 403, { error: 'Only an admin can do this. Sign in with the wall password.' });
@@ -390,14 +432,43 @@ async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/logout' && req.method === 'POST') {
     return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie() });
   }
+  // ---- Microsoft 365 sign-in: the sign-in page asks what's on offer, then goes round Microsoft ----
+  if (urlPath === '/api/login/options' && req.method === 'GET') {
+    return sendJson(res, 200, { password: auth.enabled, microsoft: auth.enabled && accounts.enabled() });
+  }
+  if (urlPath === '/api/auth/microsoft/start' && req.method === 'GET') {
+    if (!auth.enabled) return redirect(res, '/');
+    try {
+      return redirect(res, accounts.authUrl(new URL(req.url, 'http://localhost').searchParams.get('next') || '/'));
+    } catch (err) {
+      return redirect(res, `/login?error=${encodeURIComponent(err.message)}`);
+    }
+  }
+  if (urlPath === '/api/auth/microsoft/callback' && req.method === 'GET') {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const addr = clientAddress(req);
+    if (auth.lockedFor(addr)) return redirect(res, `/login?error=${encodeURIComponent('Too many refused sign-ins from this address. Try again in a few minutes.')}`);
+    try {
+      const who = await accounts.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error'), errorDescription: q.get('error_description') });
+      auth.succeeded(addr);
+      res.writeHead(302, { Location: who.next, 'Set-Cookie': auth.sessionCookie(who.role, who.id) });
+      return res.end();
+    } catch (err) {
+      await auth.failed(addr); // a refused account counts like a wrong password
+      console.warn(`Microsoft sign-in refused from ${addr}: ${err.message}`);
+      return redirect(res, `/login?error=${encodeURIComponent(err.message)}`);
+    }
+  }
   const role = session.role;
   const admin = role === 'admin';
+  const operator = admin || role === 'operator'; // runs the wall: feeds, sessions, screenshots
   const link = session.linkId ? userLinks.get(session.linkId) : null; // the user link this session came from
   // Integrations and the wall computer: an admin's alone. Checked here, so a user can't
   // reach them by calling the API directly, whatever their page shows.
   if (!admin && (urlPath.startsWith('/api/youtube/key') || urlPath.startsWith('/api/youtube/oauth/')
     || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser' || urlPath.startsWith('/api/slack')
-    || urlPath.startsWith('/api/shots') || urlPath.startsWith('/api/gdrive') || urlPath.startsWith('/api/onedrive'))) {
+    || urlPath.startsWith('/api/shots') || urlPath.startsWith('/api/gdrive') || urlPath.startsWith('/api/onedrive')
+    || urlPath.startsWith('/api/accounts'))) {
     return adminOnly(res);
   }
   // A link made without YouTube gets none of its data, the audience history included.
@@ -426,8 +497,12 @@ async function handleApi(req, res, urlPath, session) {
       // The session this window is on, and the one its link is for (users of such a link see it alone).
       session: current ? { id: current.id, name: current.name, live: current.live } : null,
       linkSession: scope,
+      canOperate: operator, // adds feeds, runs sessions, takes screenshots (admins and operators)
+      // Who may sign in with Microsoft (admins), and whether that sign-in is on offer at all.
+      access: admin ? accounts.info() : null,
+      microsoftSignIn: auth.enabled && accounts.enabled(),
       // Source screenshots are taken by this backend, in the background, not by the page's Feed Meter.
-      backendCapture: admin && autoCapture.backendTakes,
+      backendCapture: operator && autoCapture.backendTakes,
       // Where they're posted: never the token itself.
       slack: admin ? slack.info() : null,
       // Where they go: folders and every destination (admin).
@@ -451,7 +526,7 @@ async function handleApi(req, res, urlPath, session) {
     return sendJson(res, 200, { version: sessions.version, sessions: sessions.list(), current: sessionId });
   }
   if (urlPath === '/api/sessions' && req.method === 'POST') {
-    if (!admin) return adminOnly(res);
+    if (!operator) return sendJson(res, 403, { error: 'Only an admin or an operator can do this.' });
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     let made;
@@ -464,7 +539,7 @@ async function handleApi(req, res, urlPath, session) {
     return sendJson(res, 200, { session: { id: made.id, name: made.name }, sessions: sessions.list() });
   }
   if (['/api/sessions/archive', '/api/sessions/reopen', '/api/sessions/delete'].includes(urlPath) && req.method === 'POST') {
-    if (!admin) return adminOnly(res);
+    if (!operator) return sendJson(res, 403, { error: 'Only an admin or an operator can do this.' });
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     const id = String(body.id || '');
@@ -491,14 +566,14 @@ async function handleApi(req, res, urlPath, session) {
     if (!admin && body.wall && typeof body.wall === 'object') {
       const kept = current.settings || {};
       body.wall.settings = { ...(body.wall.settings || {}) };
-      for (const key of ADMIN_SETTINGS) {
+      for (const key of operator ? OPERATOR_LOCKED : ADMIN_SETTINGS) {
         if (key in kept) body.wall.settings[key] = kept[key];
         else delete body.wall.settings[key];
       }
       // Users don't add feeds: only links already on the wall, or in a saved session the
       // admin left, may appear in what they save (so reordering, removing, renaming and
       // switching sessions still work).
-      if (addsFeeds(body.wall)) return sendJson(res, 403, { error: 'Only the wall\'s admin can add feeds.' });
+      if (!operator && addsFeeds(body.wall)) return sendJson(res, 403, { error: 'Only the wall\'s admin or an operator can add feeds.' });
     }
     if (body.wall && !body.wall.session) return sendJson(res, 409, { error: 'This page is older than sessions: reload it.' });
     const version = sessions.save(sessionId, body.wall);
@@ -521,7 +596,7 @@ async function handleApi(req, res, urlPath, session) {
     // A link for one session: that session's id, which has to exist.
     const forSession = typeof body.session === 'string' && body.session ? body.session : null;
     if (forSession && !sessions.get(forSession)) return sendJson(res, 400, { error: 'No such session.' });
-    const { error } = userLinks.create({ name: body.name, days: body.days, youtube: body.youtube !== false, session: forSession });
+    const { error } = userLinks.create({ name: body.name, days: body.days, youtube: body.youtube !== false, session: forSession, role: body.role === 'operator' ? 'operator' : 'user' });
     if (error) return sendJson(res, 400, { error });
     return sendJson(res, 200, { links: linkList() });
   }
@@ -598,7 +673,7 @@ async function handleApi(req, res, urlPath, session) {
   }
   // ---- Automatic source screenshots: a page claims a job, takes it, and reports back ----
   if ((urlPath === '/api/capture/claim' || urlPath === '/api/capture/result') && req.method === 'POST') {
-    if (!admin) return adminOnly(res);
+    if (!operator) return sendJson(res, 403, { error: 'Only an admin or an operator can do this.' });
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     const job = String(body.job || '');
@@ -611,7 +686,7 @@ async function handleApi(req, res, urlPath, session) {
   }
   // ---- Capture source screenshot (the button), taken by this backend in the background ----
   if (urlPath === '/api/capture/now' && req.method === 'POST') {
-    if (!admin) return adminOnly(res);
+    if (!operator) return sendJson(res, 403, { error: 'Only an admin or an operator can do this.' });
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     if (!autoCapture.backendTakes) return sendJson(res, 404, { error: 'This wall takes screenshots with the Feed Meter in the browser.' });
     const body = await readBody(req, 2000);
@@ -641,6 +716,51 @@ async function handleApi(req, res, urlPath, session) {
     const result = await slack.test();
     return sendJson(res, 200, { ...result, slack: slack.info() });
   }
+  // ---- Access: who may sign in with a Microsoft 365 account, and as what (admin) ----
+  if (urlPath === '/api/accounts' && req.method === 'GET') return sendJson(res, 200, { access: accounts.info() });
+  if (urlPath === '/api/accounts' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const { error } = accounts.add({ email: body.email, role: body.role });
+    if (error) return sendJson(res, 400, { error, access: accounts.info() });
+    // A changed role: that account's open streams end, and its next request gets the new role.
+    const changed = accounts.find(body.email);
+    for (const [stream, c] of sseClients) {
+      if (c.linkId === changed?.id && c.role !== changed.role) {
+        sseClients.delete(stream);
+        stream.end();
+      }
+    }
+    return sendJson(res, 200, { access: accounts.info() });
+  }
+  if (urlPath === '/api/accounts/remove' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const id = String(body.id || '');
+    if (!accounts.remove(id)) return sendJson(res, 404, { error: 'No such account.', access: accounts.info() });
+    for (const [stream, c] of sseClients) {
+      if (c.linkId === id) {
+        sseClients.delete(stream);
+        stream.end();
+      }
+    }
+    return sendJson(res, 200, { access: accounts.info() });
+  }
+  if (urlPath === '/api/accounts/tenant' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    accounts.setTenantOperators(body.on === true);
+    if (body.on !== true) {
+      const tenantId = accounts.tenantOperatorId();
+      for (const [stream, c] of sseClients) {
+        if (c.linkId === tenantId) {
+          sseClients.delete(stream);
+          stream.end();
+        }
+      }
+    }
+    return sendJson(res, 200, { access: accounts.info() });
+  }
   // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations (admin) ----
   if (urlPath === '/api/shots' && req.method === 'GET') return sendJson(res, 200, { shots: shotsInfo() });
   if (urlPath === '/api/shots' && req.method === 'POST') {
@@ -654,6 +774,10 @@ async function handleApi(req, res, urlPath, session) {
     if (body.feedNames !== undefined) {
       if (!FEED_NAMES.includes(body.feedNames)) return sendJson(res, 400, { error: 'Unknown feed folder naming.' });
       patch.feedNames = body.feedNames;
+    }
+    if (body.slackPost !== undefined) {
+      if (!['note', 'file'].includes(body.slackPost)) return sendJson(res, 400, { error: 'Slack posts are either a note or the file.' });
+      patch.slackPost = body.slackPost;
     }
     if (body.folder !== undefined) {
       const folder = String(body.folder || '').trim();
@@ -813,6 +937,7 @@ const server = http.createServer((req, res) => {
   // A window shows one session: /s/<id>. The bare address goes to the link's session, or
   // the live one started most recently.
   const scopedTo = session?.linkId ? userLinks.get(session.linkId)?.session || null : null;
+  if (urlPath === '/admin') return session?.role === 'admin' ? serveFile(res, 'index.html') : redirect(res, '/');
   if (urlPath === '/') return redirect(res, `/s/${scopedTo || sessions.default().id}`);
   const page = /^\/s\/([\w-]{1,64})$/.exec(urlPath);
   if (page) {

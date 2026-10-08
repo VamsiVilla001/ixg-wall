@@ -1104,6 +1104,14 @@ body:not(.hosted) [data-hosted-only] { display: none !important; }
 /* Signed in from a user link: the integrations and the wall computer's own settings go away.
    Hiding is only for tidiness; the server strips and blocks them for users. */
 .role-user [data-admin-only] { display: none !important; }
+/* An operator runs the wall but sees nothing of the integrations: only the admin-only parts marked for operators */
+.role-operator [data-admin-only]:not([data-operator]) { display: none !important; }
+/* The Admin center (/admin): the integrations and links, and no wall; the wall never shows them */
+body:not(.admin-center) [data-admin-center] { display: none !important; }
+.admin-center .wall-tabs, .admin-center .global-actions > :not(#admin-center-link), .admin-center .session-chip,
+.admin-center #feeds-panel, .admin-center #wall-stats-panel, .admin-center #add-panel, .admin-center #session-panel { display: none !important; }
+.admin-center #drawer .sheet-section:not([data-admin-center]) { display: none !important; }
+.admin-center #drawer { left: 0; right: 0; width: min(760px, 100vw); margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 body:not(.role-user) [data-user-only] { display: none !important; }
 .role-chip { margin-right: 8px; }
 .key-row .link-days { font-family: var(--font-sans); }

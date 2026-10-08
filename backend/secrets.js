@@ -137,11 +137,34 @@ class Secrets {
     return true;
   }
 
+  // ---- Who may sign in with a Microsoft 365 account, and as what (Admin center → Access) ----
+  // [{ id, email, role, addedAt, lastSignIn }]; the role is admin, operator or user.
+  accounts() {
+    return Array.isArray(this.data.accounts) ? this.data.accounts : [];
+  }
+
+  setAccounts(list) {
+    this.data.accounts = list;
+    this.write();
+  }
+
+  // tenantOperators: whether every account in the organisation (tenantId, noted from the
+  // first admin's Microsoft sign-in) may sign in as an operator without being listed.
+  access() {
+    return { tenantOperators: false, tenantId: '', tenantName: '', ...(this.data.access || {}) };
+  }
+
+  setAccess(patch) {
+    this.data.access = { ...this.access(), ...patch };
+    this.write();
+  }
+
   // ---- Where screenshots go (Settings → Source screenshots) ----
   // layout: session-date-feed | session-feed | session-date | session; feedNames: short | full;
-  // folder: a base folder on this computer in place of the default ('' = default).
+  // folder: a base folder on this computer in place of the default ('' = default);
+  // slackPost: note (date · feed · count, with a link to the archived file) | file (the screenshot).
   shots() {
-    return { layout: 'session-date-feed', feedNames: 'short', folder: '', ...(this.data.shots || {}) };
+    return { layout: 'session-date-feed', feedNames: 'short', folder: '', slackPost: 'note', ...(this.data.shots || {}) };
   }
 
   setShots(patch) {

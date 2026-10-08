@@ -1,7 +1,9 @@
-// Sign-in for a hosted wall, with two roles and no usernames:
-//   admin  the wall password (IXG_PASSWORD): everything, including the Google integrations
-//   user   a link an admin generated (user-links.js): operates the wall, never sees the
-//          YouTube API key, the OAuth client or the channel sign-ins
+// Sign-in for a hosted wall, with three roles and no usernames:
+//   admin     the wall password (IXG_PASSWORD): everything, including the Admin center (the
+//             integrations: YouTube key, channel sign-ins, Slack, Drive, OneDrive, links)
+//   operator  a link an admin generated (user-links.js): runs the wall like an admin (feeds,
+//             sessions, screenshots) with no way into the integrations
+//   user      a link: operates the wall, adds no feeds, sees no integrations
 // The session is a signed cookie naming the role (and the user link). With no password set
 // (the laptop wall) every request is an admin's, as before.
 const crypto = require('crypto');
@@ -18,7 +20,7 @@ const FAIL_DELAY_MS = 400;         // every wrong password waits this long
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 
 class Auth {
-  constructor({ password, secret, secure, port = '', linkActive = () => false }) {
+  constructor({ password, secret, secure, port = '', principalActive = () => false }) {
     this.enabled = !!password;
     this.secure = !!secure;
     this.cookie = cookieName(String(port || '').trim()); // the explicit port in PUBLIC_URL, if any
@@ -26,7 +28,9 @@ class Auth {
     // The signing key depends on the password, so changing IXG_PASSWORD signs everyone out.
     this.key = this.enabled ? crypto.createHmac('sha256', secret).update(this.passwordHash).digest() : null;
     this.fails = new Map(); // address -> { count, resetAt }
-    this.linkActive = linkActive; // whether a user link still works (not revoked or expired)
+    // Whether the link or Microsoft account a session came from still grants that role
+    // (not revoked, expired or removed): (role, id) -> boolean.
+    this.principalActive = principalActive;
   }
 
   checkPassword(attempt) {
@@ -39,18 +43,19 @@ class Auth {
     return crypto.createHmac('sha256', this.key).update(`v2.${exp}.${role}.${link}`).digest('base64url');
   }
 
-  // Token: <expiry ms>.<role>.<user link id, or ->.<signature>. Returns { role, linkId } or
-  // null. A user's session ends as soon as their link is revoked.
+  // Token: <expiry ms>.<role>.<id, or ->.<signature>. The id is the link or the Microsoft
+  // account the session came from ('-': the password). Returns { role, linkId } or null. A
+  // session from a link or an account ends as soon as that is revoked or removed.
   read(token) {
-    const m = /^(\d{12,16})\.(admin|user)\.([a-f0-9]{12}|-)\.([\w-]{43})$/.exec(token || '');
+    const m = /^(\d{12,16})\.(admin|operator|user)\.([a-f0-9]{12}|-)\.([\w-]{43})$/.exec(token || '');
     if (!m || Number(m[1]) < Date.now()) return null;
-    const [, exp, role, link, sig] = m;
-    if ((role === 'user') !== (link !== '-')) return null;
-    const expected = Buffer.from(this.sign(exp, role, link));
+    const [, exp, role, id, sig] = m;
+    if (role !== 'admin' && id === '-') return null; // operators and users always come from a link or an account
+    const expected = Buffer.from(this.sign(exp, role, id));
     const given = Buffer.from(sig);
     if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
-    if (role === 'user' && !this.linkActive(link)) return null;
-    return { role, linkId: role === 'user' ? link : null };
+    if (id !== '-' && !this.principalActive(role, id)) return null;
+    return { role, linkId: id === '-' ? null : id };
   }
 
   // Who is asking: { role, linkId }, or null when not signed in. Always an admin when no
@@ -64,7 +69,7 @@ class Auth {
     return !!this.session(req);
   }
 
-  // An admin's session, or a user's from a link (ending when the link expires, if it does).
+  // An admin's session, or an operator's or user's from a link (ending when the link expires, if it does).
   sessionCookie(role = 'admin', linkId = null, until = Infinity) {
     const exp = Math.min(Date.now() + SESSION_DAYS * 86400e3, until);
     const link = linkId || '-';

@@ -11,6 +11,9 @@
   // file:// page) the backend answers with its default session. Every call about the wall
   // names it, so nothing this window does reaches another session.
   const SESSION_ID = sessionFromAddress();
+  // /admin: the Admin center, the integrations and links with no wall (admins only; the server
+  // sends anyone else to the wall).
+  const ADMIN_CENTER = typeof location === 'object' && location && location.pathname === '/admin';
   const withSession = (url) => (SESSION_ID ? `${url}${url.includes('?') ? '&' : '?'}session=${encodeURIComponent(SESSION_ID)}` : url);
   function sessionFromAddress() {
     const p = typeof location === 'object' && location ? String(location.pathname || '') : '';
@@ -399,7 +402,8 @@
   // gets the YouTube numbers but not the key, the OAuth client or the channel sign-ins.
   const server = { hosted: false, auth: false, role: 'admin', linkName: null, ytKey: { set: false, source: null, last4: '' } };
   const hasYtKey = () => !!server.ytKey?.set;
-  const isAdmin = () => server.role !== 'user';
+  const isAdmin = () => server.role !== 'user' && server.role !== 'operator'; // the Admin center: integrations, links
+  const canOperate = () => server.role !== 'user'; // runs the wall: feeds, sessions, screenshots (admins and operators)
 
   function toSignIn() {
     const here = location.pathname + location.search;
@@ -422,13 +426,25 @@
       // backend offline: laptop defaults
     }
     document.body.classList.toggle('hosted', server.hosted);
-    document.body.classList.toggle('role-user', !isAdmin());
+    document.body.classList.toggle('role-user', server.role === 'user');
+    document.body.classList.toggle('role-operator', server.role === 'operator');
+    document.body.classList.toggle('admin-center', ADMIN_CENTER && isAdmin());
+    $('#admin-center-link').hidden = ADMIN_CENTER || !(server.auth && isAdmin());
+    if (ADMIN_CENTER) {
+      if (!isAdmin()) location.replace('/');
+      setText($('#drawer-kicker'), 'Admin center');
+      setText($('#drawer-title'), 'Integrations, links and where screenshots go');
+      document.title = 'Admin center · IXG Wall';
+      $('#open-wall').hidden = false;
+      $('#drawer-close').hidden = true;
+      setDrawer(true);
+    }
     $('#sign-out').hidden = !server.auth;
     // Who this window is signed in as, beside the Settings title.
     const $chip = $('#role-chip');
     $chip.hidden = !server.auth;
-    setText($chip, isAdmin() ? 'Admin' : 'User');
-    $chip.title = isAdmin() ? 'Signed in with the wall password' : `Signed in with the user link "${server.linkName || 'user'}"`;
+    setText($chip, isAdmin() ? 'Admin' : server.role === 'operator' ? 'Operator' : 'User');
+    $chip.title = isAdmin() ? 'Signed in with the wall password' : `Signed in with the ${server.role === 'operator' ? 'operator' : 'user'} link "${server.linkName || 'user'}"`;
     // Shown on every wall, so it can be found: without a password it says why links are off.
     $('#links-settings').hidden = !isAdmin();
     $('#link-form').hidden = !server.auth;
@@ -437,6 +453,7 @@
     setText($('#perf-title'), server.hosted ? 'This computer & rendering' : 'Laptop & rendering');
     renderSlack();
     renderShots();
+    renderAccess();
   }
 
   const clientId = uid();
@@ -499,7 +516,7 @@
       const changes = [];
       if (session.id !== before.session?.id) {
         teardownTiles();
-        streams.forEach(addTile);
+        if (!ADMIN_CENTER) streams.forEach(addTile);
         changes.push(`session ${session.name}`);
       } else {
         // Keep the tiles' own stream objects: a tile is its stream's home.
@@ -3706,7 +3723,7 @@
   // Swap a feed's YouTube link in place, e.g. the next day's stream for the same slot.
   // An unusable link reopens the dialog with the reason, keeping what was typed.
   async function changeLink(tile) {
-    if (!isAdmin()) return; // a new link is a new feed: admins only
+    if (!canOperate()) return; // a new link is a new feed: admins and operators only
     let value = `https://youtube.com/live/${tile.stream.source.id}`;
     let problem = '';
     for (;;) {
@@ -4667,6 +4684,7 @@
       const meta = document.createElement('span');
       meta.className = 'session-row-meta';
       meta.textContent = [
+        l.role === 'operator' ? 'Operator' : 'User',
         l.expired ? 'Expired' : l.expiresAt ? `Until ${localStamp(l.expiresAt, { short: true })}` : 'Until revoked',
         l.youtube ? 'YouTube numbers & ingest' : 'no YouTube data',
         l.session ? `only ${l.sessionName || 'one session'}` : 'any session',
@@ -4716,7 +4734,7 @@
     }
     // For this session alone (its id goes with the link), or for any session.
     const forSession = $('#link-session').checked ? session?.id || null : null;
-    if (await linksAction('/api/links', { name, days: Number($('#link-days').value), youtube: $('#link-youtube').checked, session: forSession })) {
+    if (await linksAction('/api/links', { name, days: Number($('#link-days').value), youtube: $('#link-youtube').checked, session: forSession, role: $('#link-role').value })) {
       $('#link-name').value = '';
       // The new link is last: copy it straight away, ready to share.
       const row = $('#link-list').lastElementChild;
@@ -5314,7 +5332,7 @@
 
   $form.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (!isAdmin()) return; // the server refuses a user's new feeds too
+    if (!canOperate()) return; // the server refuses a user's new feeds too
     readAddInput(); // the wall may have changed since the preview was drawn
     const picked = addRows.filter((r) => r.include);
     if (!picked.length) {
@@ -5503,7 +5521,7 @@
     setText($('#session-name'), session.name);
     setText($('#session-when'), session.live === false ? 'Archived' : localStamp(session.startedAt, { short: true }));
     $sessionToggle.title = `Session: ${session.name} · started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)}${session.live === false ? ' · archived' : ''} · ${sessionList.length} session${sessionList.length === 1 ? '' : 's'}, ${live} live`;
-    const title = `${session.name} · IXG Wall`;
+    const title = ADMIN_CENTER ? 'Admin center · IXG Wall' : `${session.name} · IXG Wall`;
     if (document.title !== title) document.title = title;
     setText($('#link-session-name'), session.name); // the "only this session" choice when making a user link
   }
@@ -5517,7 +5535,7 @@
     const shown = server.linkSession ? sessionList.filter((x) => x.id === server.linkSession) : sessionList;
     const live = shown.filter((x) => x.live).length;
     setText($('#session-saved-title'), shown.length ? `Sessions · ${shown.length} (${live} live)` : 'No sessions yet');
-    $('#session-new-form').hidden = !!server.linkSession || (server.auth && !isAdmin());
+    $('#session-new-form').hidden = !!server.linkSession || (server.auth && !canOperate());
     $('#session-list').replaceChildren(...shown.map((x) => {
       const current = x.id === session.id;
       const li = document.createElement('li');
@@ -5545,7 +5563,7 @@
       };
       if (!current) btn('Open', 'btn-outline', () => openSession(x.id), `Open ${x.name} in this window`);
       btn('New window', 'btn-ghost', () => openSession(x.id, true), `Open ${x.name} in a new window`);
-      if (isAdmin()) {
+      if (canOperate()) {
         if (x.live) btn('Archive', 'btn-ghost', () => archiveSession(x.id), `Archive ${x.name}`);
         else {
           btn('Reopen', 'btn-outline', () => reopenSession(x.id), `Reopen ${x.name}`);
@@ -5595,6 +5613,7 @@
   $('#wall-full').addEventListener('click', () => toggleFullscreen(document.documentElement));
 
   function setDrawer(open) {
+    if (ADMIN_CENTER && !open) return; // the Admin center is the drawer
     if (open && inspected) closeFeedSheet();
     $drawer.hidden = !open;
     $settingsToggle.setAttribute('aria-expanded', String(open));
@@ -5776,7 +5795,7 @@
   let autoClaiming = false;
   async function takeAutoCapture() {
     if (server.backendCapture) return;
-    if (autoClaiming || shot.job || !isAdmin() || !settings.autoCapture || location.protocol === 'file:' || Date.now() < autoBusyUntil) return;
+    if (autoClaiming || shot.job || !canOperate() || !settings.autoCapture || location.protocol === 'file:' || Date.now() < autoBusyUntil) return;
     const open = (ytState?.captures || []).filter((c) => c && /^[\w-]{11}$/.test(c.id));
     if (!open.length || captureBlocker()) return;
     autoClaiming = true;
@@ -5996,6 +6015,101 @@
     slackNote = { text: r.message || r.error || 'No answer', tone: r.ok ? 'ok' : 'bad' };
     renderSlack();
   });
+  // ---- Access: who may sign in with a Microsoft 365 account, and as what (Admin center).
+  let accessNote = null;
+  function renderAccess() {
+    const a = server.access;
+    const $sec = $('#access-settings');
+    $sec.hidden = !a; // an older backend, or not an admin
+    if (!a) return;
+    setText($('#access-redirect'), a.redirectUri || '');
+    const tenant = a.tenantName || a.tenantId;
+    setText($('#access-tenant-label'), tenant ? `Everyone in ${tenant} may sign in as an operator` : 'Everyone in the organisation may sign in as an operator (noted from the first admin\'s Microsoft sign-in)');
+    $('#access-tenant').checked = !!a.tenantOperators;
+    $('#access-tenant').disabled = !a.tenantId;
+    const listed = a.accounts.length;
+    let text = !a.enabled ? 'Microsoft sign-in is off until the Microsoft app is added (OneDrive, below).'
+      : `Microsoft sign-in is on: ${listed} account${listed === 1 ? '' : 's'} allowed${a.tenantOperators ? ', and everyone in the organisation as an operator' : ''}.`;
+    let tone = a.enabled ? 'ok' : 'warn';
+    if (accessNote) [text, tone] = [accessNote.text, accessNote.tone];
+    setText($('#access-status'), text);
+    setTone($('#access-status'), tone);
+    $('#access-list').replaceChildren(...a.accounts.map((acc) => {
+      const li = document.createElement('li');
+      li.className = 'session-row';
+      const info = document.createElement('div');
+      info.className = 'session-info';
+      const name = document.createElement('span');
+      name.className = 'session-row-name';
+      name.textContent = acc.email;
+      const meta = document.createElement('span');
+      meta.className = 'session-row-meta';
+      meta.textContent = [acc.source === 'env' ? 'Admin · set on the server' : acc.role[0].toUpperCase() + acc.role.slice(1),
+        acc.lastSignIn ? `signed in ${localStamp(acc.lastSignIn, { short: true })}` : 'not signed in yet'].join(' · ');
+      info.append(name, meta);
+      const actions = document.createElement('div');
+      actions.className = 'session-actions';
+      if (acc.source !== 'env') {
+        const role = document.createElement('select');
+        role.className = 'input select link-days';
+        role.setAttribute('aria-label', `Role of ${acc.email}`);
+        for (const r of ['admin', 'operator', 'user']) {
+          const o = document.createElement('option');
+          o.value = r;
+          o.textContent = r[0].toUpperCase() + r.slice(1);
+          o.selected = r === acc.role;
+          role.append(o);
+        }
+        role.addEventListener('change', async () => {
+          const r = await accessAction('/api/accounts', { email: acc.email, role: role.value });
+          accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
+          renderAccess();
+        });
+        const remove = document.createElement('button');
+        remove.className = 'btn btn-ghost btn-xs';
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', `Remove ${acc.email}`);
+        remove.addEventListener('click', async () => {
+          const ok = await ask({ title: `Remove ${acc.email}?`, body: 'They can no longer sign in with Microsoft, and are signed out on their next request.', confirm: 'Remove', variant: 'destructive' });
+          if (!ok) return;
+          const r = await accessAction('/api/accounts/remove', { id: acc.id });
+          accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
+          renderAccess();
+        });
+        actions.append(role, remove);
+      }
+      li.append(info, actions);
+      return li;
+    }));
+  }
+
+  async function accessAction(url, body) {
+    try {
+      const res = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify(body || {}) });
+      const data = await res.json().catch(() => ({}));
+      if (data.access) server.access = data.access;
+      return res.status === 404 && !data.access ? { error: 'The running backend is older than this page: restart it.' } : { ...data, status: res.status };
+    } catch {
+      return { error: 'Backend offline.' };
+    }
+  }
+
+  $('#access-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = $('#access-email').value.trim();
+    if (!email) return $('#access-email').focus();
+    const r = await accessAction('/api/accounts', { email, role: $('#access-role').value });
+    accessNote = r.error ? { text: r.error, tone: 'bad' } : { text: `${email} may now sign in as ${$('#access-role').value}.`, tone: 'ok' };
+    if (!r.error) $('#access-email').value = '';
+    renderAccess();
+    return undefined;
+  });
+  $('#access-tenant').addEventListener('change', async (e) => {
+    const r = await accessAction('/api/accounts/tenant', { on: e.target.checked });
+    accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
+    renderAccess();
+  });
+
   // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations.
   // The page learns each destination's account and folder, never a token or secret.
   const shotsNote = { shots: null, gdrive: null, onedrive: null }; // { text, tone } from the last action, until the next
@@ -6010,6 +6124,7 @@
     // Folders
     if (document.activeElement !== $('#shots-layout')) $('#shots-layout').value = sh.layout;
     if (document.activeElement !== $('#shots-feed-names')) $('#shots-feed-names').value = sh.feedNames;
+    if (document.activeElement !== $('#slack-post')) $('#slack-post').value = sh.slackPost || 'note';
     if (document.activeElement !== $('#shots-folder')) $('#shots-folder').value = sh.folder || '';
     $('#shots-folder').placeholder = sh.defaultFolder ? `Default: ${sh.defaultFolder}` : 'The default folder';
     const status = (sel, note, text, tone) => {
@@ -6088,7 +6203,7 @@
     }, 2000);
   }
 
-  for (const [sel, key] of [['#shots-layout', 'layout'], ['#shots-feed-names', 'feedNames']]) {
+  for (const [sel, key] of [['#shots-layout', 'layout'], ['#shots-feed-names', 'feedNames'], ['#slack-post', 'slackPost']]) {
     $(sel).addEventListener('change', async (e) => {
       const r = await shotsAction('/api/shots', { [key]: e.target.value });
       shotsNote.shots = r.error ? { text: r.error, tone: 'bad' } : null;
@@ -6235,7 +6350,7 @@
   loadServerConfig().then(loadServerWall).then(() => {
     syncSettingInputs();
     document.body.classList.toggle('hide-stats', !settings.showStats);
-    streams.forEach(addTile);
+    if (!ADMIN_CENTER) streams.forEach(addTile);
     updateLayout();
     updateSummary();
     renderSession();

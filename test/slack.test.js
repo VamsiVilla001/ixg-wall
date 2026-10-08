@@ -120,6 +120,18 @@ test('a screenshot goes up in three steps and is shared in the channel with its 
   assert.deepEqual(JSON.parse(done.files), [{ id: 'F1', title: '[Hindi] - BMSD 2026 Semi-Finals Day 1 - 154,337 PCV - 2026-10-08 15-52' }]);
 });
 
+test('a note goes to the channel as a message, links kept as Slack links', async () => {
+  const slack = await poster();
+  await slack.save({ token: TOKEN, channel: 'C0123ABCDEF' });
+  slackFake.calls.length = 0;
+  const r = await slack.notify('2026-10-08 · Hindi Day 1 · 233,375 CCV · new PCV · <https://1drv.ms/x|Open in OneDrive>');
+  assert.deepEqual(r, { ok: true, tries: 1 });
+  assert.deepEqual(slackFake.calls.map((c) => c.method), ['chat.postMessage']);
+  assert.equal(slackFake.calls[0].p.channel, 'C0123ABCDEF');
+  assert.match(slackFake.calls[0].p.text, /^2026-10-08 · Hindi Day 1 · 233,375 CCV · new PCV · <https:\/\/1drv\.ms\/x\|Open in OneDrive>$/);
+  assert.equal(slackFake.calls[0].p.unfurl_links, 'false', 'no preview box under the note');
+});
+
 test('Slack asking to slow down is waited out and tried again; the app not in the channel is not retried', async () => {
   const slack = await poster();
   await slack.save({ token: TOKEN, channel: 'C0123ABCDEF' });
