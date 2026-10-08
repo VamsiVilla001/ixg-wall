@@ -407,7 +407,10 @@
 
   function toSignIn() {
     const here = location.pathname + location.search;
-    location.assign(here === '/' ? '/login' : `/login?next=${encodeURIComponent(here)}`);
+    // The page was signed in and no longer is: the sign-in page says the session ended.
+    const reason = server.auth ? 'reason=expired' : '';
+    const q = [here === '/' ? '' : `next=${encodeURIComponent(here)}`, reason].filter(Boolean).join('&');
+    location.assign(q ? `/login?${q}` : '/login');
   }
 
   // fetch() for the wall's own API: a lapsed sign-in sends the page to the sign-in screen.
@@ -443,8 +446,15 @@
     // Who this window is signed in as, beside the Settings title.
     const $chip = $('#role-chip');
     $chip.hidden = !server.auth;
-    setText($chip, isAdmin() ? 'Admin' : server.role === 'operator' ? 'Operator' : 'User');
-    $chip.title = isAdmin() ? 'Signed in with the wall password' : `Signed in with the ${server.role === 'operator' ? 'operator' : 'user'} link "${server.linkName || 'user'}"`;
+    const roleName = isAdmin() ? 'Admin' : server.role === 'operator' ? 'Operator' : 'User';
+    setText($chip, roleName);
+    const acc = server.account;
+    $chip.title = acc ? `Signed in with Microsoft as ${acc.name || acc.email}` : isAdmin() ? 'Signed in with the wall password' : `Signed in with the ${server.role === 'operator' ? 'operator' : 'user'} link "${server.linkName || 'user'}"`;
+    // Who this is, for a Microsoft sign-in: name, organisation email and role, beside Sign out.
+    const $who = $('#account-info');
+    $who.hidden = !(server.auth && acc);
+    if (acc) setText($who, `Signed in with Microsoft 365 as ${acc.name || acc.email}${acc.email && acc.name ? ` (${acc.email})` : ''} · ${roleName}${server.sessionExpiresAt ? ` · sign-in renews before ${new Date(server.sessionExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`);
+    scheduleRenewal();
     // Shown on every wall, so it can be found: without a password it says why links are off.
     $('#links-settings').hidden = !isAdmin();
     $('#link-form').hidden = !server.auth;
@@ -5528,6 +5538,8 @@
 
   function renderSession() {
     renderSessionChip();
+    // The Admin center's Access offers the sessions an account may be limited to: keep it current.
+    if (ADMIN_CENTER && server.access) renderAccess();
     if ($sessionPanel.hidden) return;
     if (document.activeElement !== $('#session-name-input')) $('#session-name-input').value = session.name;
     setText($('#session-meta'), `Started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} on the wall · ${session.live === false ? 'archived: not polled or screenshotted' : 'live'}`);
@@ -5535,7 +5547,7 @@
     const shown = server.linkSession ? sessionList.filter((x) => x.id === server.linkSession) : sessionList;
     const live = shown.filter((x) => x.live).length;
     setText($('#session-saved-title'), shown.length ? `Sessions · ${shown.length} (${live} live)` : 'No sessions yet');
-    $('#session-new-form').hidden = !!server.linkSession || (server.auth && !canOperate());
+    $('#session-new-form').hidden = !!server.linkSession || !!server.allowedSessions || (server.auth && !canOperate());
     $('#session-list').replaceChildren(...shown.map((x) => {
       const current = x.id === session.id;
       const li = document.createElement('li');
@@ -6023,6 +6035,17 @@
     $sec.hidden = !a; // an older backend, or not an admin
     if (!a) return;
     setText($('#access-redirect'), a.redirectUri || '');
+    setText($('#access-logout'), a.postLogoutRedirectUri || '');
+    setText($('#access-hours'), String(a.sessionHours || 8));
+    // The sessions an account may be limited to: the add form's choice, and each row's.
+    const sessionOptions = (chosen) => [['', 'All sessions'], ...sessionList.map((s) => [s.id, `${s.name}${s.live ? '' : ' (archived)'}`])].map(([v, t]) => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = t;
+      o.selected = v === chosen;
+      return o;
+    });
+    if (document.activeElement !== $('#access-sessions')) $('#access-sessions').replaceChildren(...sessionOptions($('#access-sessions').value));
     const tenant = a.tenantName || a.tenantId;
     setText($('#access-tenant-label'), tenant ? `Everyone in ${tenant} may sign in as an operator` : 'Everyone in the organisation may sign in as an operator (noted from the first admin\'s Microsoft sign-in)');
     $('#access-tenant').checked = !!a.tenantOperators;
@@ -6044,10 +6067,12 @@
       info.className = 'session-info';
       const name = document.createElement('span');
       name.className = 'session-row-name';
-      name.textContent = acc.email;
+      name.textContent = acc.name && acc.email ? `${acc.name} · ${acc.email}` : acc.email || acc.name || acc.oid || acc.id;
       const meta = document.createElement('span');
       meta.className = 'session-row-meta';
-      meta.textContent = [acc.source === 'env' ? 'Admin · set on the server' : acc.role[0].toUpperCase() + acc.role.slice(1),
+      const roleText = acc.role[0].toUpperCase() + acc.role.slice(1);
+      const scoped = acc.sessions ? acc.sessions.map((id) => sessionList.find((s) => s.id === id)?.name || 'a removed session').join(', ') : 'all sessions';
+      meta.textContent = [acc.source === 'env' ? 'Admin · set on the server' : acc.source === 'entra' ? `${roleText} · app role from Microsoft Entra` : roleText, scoped,
         acc.lastSignIn ? `signed in ${localStamp(acc.lastSignIn, { short: true })}` : 'not signed in yet'].join(' · ');
       info.append(name, meta);
       const actions = document.createElement('div');
@@ -6056,6 +6081,8 @@
         const role = document.createElement('select');
         role.className = 'input select link-days';
         role.setAttribute('aria-label', `Role of ${acc.email}`);
+        role.disabled = acc.source === 'entra';
+        role.title = acc.source === 'entra' ? 'This role is assigned in Microsoft Entra' : '';
         for (const r of ['admin', 'operator', 'user']) {
           const o = document.createElement('option');
           o.value = r;
@@ -6064,10 +6091,27 @@
           role.append(o);
         }
         role.addEventListener('change', async () => {
-          const r = await accessAction('/api/accounts', { email: acc.email, role: role.value });
+          const r = await accessAction('/api/accounts/update', { id: acc.id, role: role.value });
           accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
           renderAccess();
         });
+        const which = document.createElement('select');
+        which.className = 'input select link-days';
+        which.setAttribute('aria-label', `Sessions ${acc.email} may see`);
+        which.replaceChildren(...sessionOptions(acc.sessions?.[0] || ''));
+        if (acc.sessions && acc.sessions.length > 1) {
+          const o = document.createElement('option');
+          o.value = acc.sessions.join(',');
+          o.textContent = `${acc.sessions.length} sessions`;
+          o.selected = true;
+          which.append(o);
+        }
+        which.addEventListener('change', async () => {
+          const r = await accessAction('/api/accounts/update', { id: acc.id, sessions: which.value ? which.value.split(',') : null });
+          accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
+          renderAccess();
+        });
+        actions.append(which);
         const remove = document.createElement('button');
         remove.className = 'btn btn-ghost btn-xs';
         remove.textContent = 'Remove';
@@ -6082,6 +6126,44 @@
         actions.append(role, remove);
       }
       li.append(info, actions);
+      return li;
+    }));
+    loadAudit();
+  }
+
+  // The last sign-ins, refusals and changes, from the server's audit log.
+  let auditShown = '';
+  async function loadAudit() {
+    let entries;
+    try {
+      entries = (await (await api('/api/accounts/audit?limit=15')).json()).audit;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(entries)) return;
+    const key = JSON.stringify(entries);
+    if (key === auditShown) return;
+    auditShown = key;
+    $('#access-audit').replaceChildren(...(entries.length ? entries : [null]).map((e) => {
+      const li = document.createElement('li');
+      li.className = 'session-row';
+      const info = document.createElement('div');
+      info.className = 'session-info';
+      const name = document.createElement('span');
+      name.className = 'session-row-name';
+      const meta = document.createElement('span');
+      meta.className = 'session-row-meta';
+      if (!e) {
+        name.textContent = 'Nothing yet.';
+      } else {
+        const what = e.action === 'signin' ? (e.result === 'ok' ? 'Signed in' : 'Sign-in refused') : e.action === 'renew' ? (e.result === 'ok' ? 'Sign-in renewed' : 'Renewal refused')
+          : e.action === 'signout' ? 'Signed out' : 'Access changed';
+        name.textContent = `${what}: ${e.who}${e.role ? ` (${e.role})` : ''}${e.detail ? ` · ${e.detail}` : ''}`;
+        meta.textContent = [localStamp(e.at, { short: true }), e.via, e.addr].filter(Boolean).join(' · ');
+        meta.dataset.tone = e.result === 'refused' ? 'bad' : '';
+      }
+      info.append(name, meta);
+      li.append(info);
       return li;
     }));
   }
@@ -6101,8 +6183,9 @@
     e.preventDefault();
     const email = $('#access-email').value.trim();
     if (!email) return $('#access-email').focus();
-    const r = await accessAction('/api/accounts', { email, role: $('#access-role').value });
-    accessNote = r.error ? { text: r.error, tone: 'bad' } : { text: `${email} may now sign in as ${$('#access-role').value}.`, tone: 'ok' };
+    const chosen = $('#access-sessions').value;
+    const r = await accessAction('/api/accounts', { email, role: $('#access-role').value, sessions: chosen ? [chosen] : null });
+    accessNote = r.error ? { text: r.error, tone: 'bad' } : { text: `${email} may now sign in as ${$('#access-role').value}${chosen ? ', into that session alone' : ''}.`, tone: 'ok' };
     if (!r.error) $('#access-email').value = '';
     renderAccess();
     return undefined;
@@ -6264,9 +6347,10 @@
     e.preventDefault();
     const clientId = $('#onedrive-client-id').value.trim();
     const clientSecret = $('#onedrive-client-secret').value.trim();
+    const tenantId = $('#onedrive-tenant-id').value.trim();
     shotsNote.onedrive = { text: 'Checking the app with Microsoft…', tone: '' };
     renderShots();
-    const r = await shotsAction('/api/onedrive/client', { clientId, clientSecret });
+    const r = await shotsAction('/api/onedrive/client', { clientId, clientSecret, tenantId });
     shotsNote.onedrive = r.error ? { text: r.error, tone: 'bad' } : null;
     if (!r.error) {
       $('#onedrive-client-secret').value = '';
@@ -6277,6 +6361,7 @@
   $('#onedrive-client-change').addEventListener('click', () => {
     onedriveEditingClient = true;
     $('#onedrive-client-id').value = server.shots?.onedrive?.client?.clientId || '';
+    $('#onedrive-tenant-id').value = server.shots?.onedrive?.client?.tenantId || '';
     renderShots();
   });
   $('#onedrive-signin').addEventListener('click', () => openDestinationSignIn('/api/onedrive/start'));
@@ -6351,12 +6436,65 @@
   }
 
   $('#sign-out').addEventListener('click', async () => {
+    // The wall's session ends here; a Microsoft sign-in then goes on to Microsoft's own
+    // sign-out, which comes back to the sign-in page.
+    let next = '/login?signedout=1';
     try {
-      await fetch('/api/logout', { method: 'POST', headers: { 'X-IXG-Wall': '1' } });
+      const body = await fetch('/api/logout', { method: 'POST', headers: { 'X-IXG-Wall': '1' } }).then((r) => r.json());
+      if (typeof body.next === 'string' && (body.next.startsWith('/') || /^https:\/\/login\.microsoftonline\.com\//.test(body.next) || body.next.startsWith(location.origin))) next = body.next;
     } catch {
       // the server is unreachable; the sign-in page will say so
     }
-    location.assign('/login');
+    location.assign(next);
+  });
+
+  // ---- A Microsoft sign-in lasts some hours: the wall renews it quietly before it ends,
+  // through a hidden frame that goes round Microsoft with prompt=none (no account picker;
+  // Microsoft's own session, MFA and Conditional Access decide). If that doesn't work, a
+  // notice asks for a sign-in while the wall keeps running until the session ends.
+  const RENEW_AHEAD_MS = 15 * 60000;
+  let renewTimer = null;
+  let renewFrame = null;
+  function scheduleRenewal() {
+    clearTimeout(renewTimer);
+    if (server.sessionVia !== 'microsoft' || !server.sessionExpiresAt) return;
+    const inMs = Math.max(1000, server.sessionExpiresAt - RENEW_AHEAD_MS - Date.now());
+    renewTimer = setTimeout(renewSession, Math.min(inMs, 2 ** 31 - 1));
+  }
+  function renewSession() {
+    if (renewFrame) return;
+    renewFrame = document.createElement('iframe');
+    renewFrame.hidden = true;
+    renewFrame.setAttribute('aria-hidden', 'true');
+    renewFrame.src = `/api/auth/microsoft/start?silent=1&next=${encodeURIComponent('/')}`;
+    const done = (ok, error) => {
+      if (!renewFrame) return;
+      renewFrame.remove();
+      renewFrame = null;
+      clearTimeout(giveUp);
+      if (ok) {
+        $('#session-notice').hidden = true;
+        scheduleRenewal();
+        return;
+      }
+      const ends = server.sessionExpiresAt ? new Date(server.sessionExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      setText($('#session-notice-text'), `Your Microsoft sign-in couldn't be renewed quietly${error ? ` (${error})` : ''}. The wall keeps running until ${ends || 'it ends'}; sign in again to keep it going.`);
+      $('#session-notice').hidden = false;
+      renewTimer = setTimeout(renewSession, 5 * 60000); // try again, in case Microsoft was just unreachable
+    };
+    const giveUp = setTimeout(() => done(false, 'no answer from Microsoft'), 30000);
+    const onMessage = (e) => {
+      if (e.origin !== location.origin || e.data?.type !== 'ixg-renewed') return;
+      window.removeEventListener('message', onMessage);
+      if (e.data.ok && e.data.exp) server.sessionExpiresAt = e.data.exp;
+      done(!!e.data.ok, e.data.error);
+    };
+    window.addEventListener('message', onMessage);
+    document.body.append(renewFrame);
+  }
+  $('#session-renew').addEventListener('click', () => {
+    const here = location.pathname + location.search;
+    location.assign(`/api/auth/microsoft/start?next=${encodeURIComponent(here)}`);
   });
 
   const ytApi = loadYouTubeApi(); // fetch the player API while the wall loads

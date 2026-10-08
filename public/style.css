@@ -406,6 +406,12 @@ code { font-family: var(--font-mono); }
 }
 .notice-danger { border-left-color: var(--danger); background: color-mix(in oklab, var(--danger) 14%, var(--background)); }
 .notice-warn { border-left-color: var(--warn); background: color-mix(in oklab, var(--warn) 12%, var(--background)); }
+.session-notice { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.session-notice[hidden] { display: none; }
+.account-info { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.account-info[hidden] { display: none; }
+.audit-list .session-row { padding: 6px 0; }
+.audit-list .session-row-name { font-size: 12px; }
 
 /* Wall */
 .wall { position: relative; flex: 1; min-height: 0; }

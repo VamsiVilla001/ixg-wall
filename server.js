@@ -11,7 +11,9 @@ const config = require('./backend/config');
 const { Auth, clientAddress } = require('./backend/auth');
 const { Secrets } = require('./backend/secrets');
 const { UserLinks, ID_FORMAT } = require('./backend/user-links');
-const { Accounts } = require('./backend/accounts');
+const { Accounts, SESSION_MS: MS_SESSION_MS } = require('./backend/accounts');
+const { Audit } = require('./backend/audit');
+const { DATA_DIR } = require('./backend/paths');
 const { GoogleCredentials } = require('./backend/google-credentials');
 const { IngestHealth } = require('./backend/youtube-ingest');
 const feedMeter = require('./backend/extension');
@@ -87,6 +89,24 @@ const accounts = new Accounts({ secrets, publicUrl: PUBLIC_URL, envAdmins: confi
 // or a listed account.
 const principalActive = (role, id) => (role !== 'admin' && userLinks.active(id) && (userLinks.get(id)?.role === 'operator' ? 'operator' : 'user') === role) || accounts.active(role, id);
 const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, port: new URL(PUBLIC_URL).port, principalActive });
+// Every sign-in, refusal, sign-out and change to who may sign in: DATA_DIR/auth-audit.log.
+const audit = new Audit({ dir: DATA_DIR });
+// How a session was made: the password, a link, or a Microsoft account.
+const sessionVia = (session) => (!session?.linkId ? 'password' : userLinks.get(session.linkId) ? 'link' : 'microsoft');
+// The sessions a request may see: null for all, else the ids (a link made for one session,
+// or an account limited to some).
+function sessionScope(session, link) {
+  if (link) return link.session ? [link.session] : null;
+  return session?.linkId ? accounts.scopeOf(session.linkId) : null;
+}
+// The session a scoped request lands on with none named: a live one of its own, else the
+// first that still exists; '' when none does.
+function defaultSessionFor(scope) {
+  if (!scope) return sessions.default().id;
+  const mine = scope.map((id) => sessions.get(id)).filter(Boolean);
+  return (mine.find((s) => s.live) || mine[0])?.id || '';
+}
+const sessionsFor = (scope) => (scope ? sessions.list().filter((s) => scope.includes(s.id)) : sessions.list());
 const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED, wallProfile: HOSTED ? '' : PROFILE_DIR });
 const wallBrowser = HOSTED ? null : new WallBrowser({ url: `http://localhost:${PORT}/` });
 // Anyone's YouTube key and Google OAuth client, checked with Google before they're saved.
@@ -199,7 +219,13 @@ function broadcastYoutube() {
 // The list of sessions changed, or one went live or archived: every window's panel, and the
 // pollers (a session going live brings its feeds in; archived, takes them out).
 function sessionsChanged() {
-  broadcast('sessions', { version: sessions.version, sessions: sessions.list() });
+  // Each window gets the sessions it may see.
+  const msgs = new Map();
+  for (const [res, c] of sseClients) {
+    const key = c.scope ? c.scope.join(',') : '*';
+    if (!msgs.has(key)) msgs.set(key, `event: sessions\ndata: ${JSON.stringify({ version: sessions.version, sessions: sessionsFor(c.scope) })}\n\n`);
+    res.write(msgs.get(key));
+  }
   youtube.wallChanged();
   ingest.wallChanged();
   preloadShots();
@@ -385,8 +411,11 @@ function trusted(req) {
 async function login(req, res) {
   if (!auth.enabled) return sendJson(res, 200, { ok: true });
   if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
-  if (!accounts.passwordAllowed()) return sendJson(res, 403, { error: 'The password sign-in is switched off: sign in with Microsoft.' });
   const addr = clientAddress(req);
+  if (!accounts.passwordAllowed()) {
+    audit.record({ action: 'signin', result: 'refused', who: 'password', via: 'password', addr, detail: 'password sign-in is switched off' });
+    return sendJson(res, 403, { error: 'The password sign-in is switched off: sign in with Microsoft.' });
+  }
   const wait = auth.lockedFor(addr);
   if (wait) {
     return sendJson(res, 429, { error: `Too many wrong passwords. Try again in ${Math.ceil(wait / 60)} min.` }, { 'Retry-After': String(wait) });
@@ -395,9 +424,11 @@ async function login(req, res) {
   if (!auth.checkPassword(body.password)) {
     await auth.failed(addr);
     console.warn(`Failed sign-in from ${addr}`);
+    audit.record({ action: 'signin', result: 'refused', who: 'password', via: 'password', addr, detail: 'wrong password' });
     return sendJson(res, 401, { error: 'Wrong password.' });
   }
   auth.succeeded(addr);
+  audit.record({ action: 'signin', who: 'password', role: 'admin', via: 'password', addr });
   sendJson(res, 200, { ok: true, role: 'admin' }, { 'Set-Cookie': auth.sessionCookie('admin') });
 }
 
@@ -416,12 +447,14 @@ async function join(req, res) {
   if (!link) {
     await auth.failed(addr);
     console.warn(`Failed user link from ${addr}`);
+    audit.record({ action: 'signin', result: 'refused', who: 'link', via: 'link', addr, detail: 'unknown, revoked or expired link' });
     return sendJson(res, 401, { error: 'This link doesn\'t work: it may have been revoked or have expired. Ask the wall\'s admin for a new one.' });
   }
   auth.succeeded(addr);
   userLinks.used(link);
   const until = link.expiresAt ? Date.parse(link.expiresAt) : Infinity;
   const role = link.role === 'operator' ? 'operator' : 'user';
+  audit.record({ action: 'signin', who: `link "${link.name}"`, role, via: 'link', addr });
   sendJson(res, 200, { ok: true, role, next: link.session ? `/s/${link.session}` : '/' }, { 'Set-Cookie': auth.sessionCookie(role, link.id, until) });
 }
 
@@ -431,7 +464,12 @@ async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/login' && req.method === 'POST') return login(req, res);
   if (urlPath === '/api/join' && req.method === 'POST') return join(req, res);
   if (urlPath === '/api/logout' && req.method === 'POST') {
-    return sendJson(res, 200, { ok: true }, { 'Set-Cookie': auth.clearCookie() });
+    // A Microsoft sign-in is ended on Microsoft's side too: the page goes on to Microsoft's
+    // sign-out, which comes back to the sign-in page.
+    const via = session.role ? sessionVia(session) : null;
+    if (via) audit.record({ action: 'signout', who: via === 'microsoft' ? accounts.byId(session.linkId)?.email || session.linkId : via, role: session.role, via, addr: clientAddress(req) });
+    const next = via === 'microsoft' ? accounts.logoutUrl() : null;
+    return sendJson(res, 200, { ok: true, next: next || '/login?signedout=1' }, { 'Set-Cookie': auth.clearCookie() });
   }
   // ---- Microsoft 365 sign-in: the sign-in page asks what's on offer, then goes round Microsoft ----
   if (urlPath === '/api/login/options' && req.method === 'GET') {
@@ -439,24 +477,47 @@ async function handleApi(req, res, urlPath, session) {
   }
   if (urlPath === '/api/auth/microsoft/start' && req.method === 'GET') {
     if (!auth.enabled) return redirect(res, '/');
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const silent = q.get('silent') === '1'; // the page renewing its session from a hidden frame
     try {
-      return redirect(res, accounts.authUrl(new URL(req.url, 'http://localhost').searchParams.get('next') || '/'));
+      return redirect(res, accounts.authUrl(q.get('next') || '/', { silent }));
     } catch (err) {
+      if (silent) return sendHtml(res, 200, renewPage(false, err.message));
       return redirect(res, `/login?error=${encodeURIComponent(err.message)}`);
     }
   }
   if (urlPath === '/api/auth/microsoft/callback' && req.method === 'GET') {
     const q = new URL(req.url, 'http://localhost').searchParams;
     const addr = clientAddress(req);
-    if (auth.lockedFor(addr)) return redirect(res, `/login?error=${encodeURIComponent('Too many refused sign-ins from this address. Try again in a few minutes.')}`);
+    const silent = accounts.isSilent(q.get('state'));
+    if (auth.lockedFor(addr)) {
+      const msg = 'Too many refused sign-ins from this address. Try again in a few minutes.';
+      return silent ? sendHtml(res, 200, renewPage(false, msg)) : redirect(res, `/login?error=${encodeURIComponent(msg)}`);
+    }
     try {
       const who = await accounts.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error'), errorDescription: q.get('error_description') });
       auth.succeeded(addr);
-      res.writeHead(302, { Location: who.next, 'Set-Cookie': auth.sessionCookie(who.role, who.id) });
+      const exp = Date.now() + MS_SESSION_MS;
+      audit.record({ action: silent ? 'renew' : 'signin', who: who.email, role: who.role, via: 'microsoft', addr });
+      // Their own streams carry the role of this sign-in from now on (an app role may have changed it).
+      for (const [stream, c] of sseClients) {
+        if (c.linkId === who.id && c.role !== who.role) {
+          sseClients.delete(stream);
+          stream.end();
+        }
+      }
+      const cookie = auth.sessionCookie(who.role, who.id, exp);
+      if (silent) return sendHtml(res, 200, renewPage(true, '', exp), { 'Set-Cookie': cookie });
+      // A scoped account lands on a session of its own.
+      const scope = who.sessions;
+      const next = scope && (who.next === '/' || !scope.some((id) => who.next.startsWith(`/s/${id}`))) ? `/s/${defaultSessionFor(scope) || scope[0]}` : who.next;
+      res.writeHead(302, { Location: next, 'Set-Cookie': cookie });
       return res.end();
     } catch (err) {
-      await auth.failed(addr); // a refused account counts like a wrong password
-      console.warn(`Microsoft sign-in refused from ${addr}: ${err.message}`);
+      if (err.code !== 'interaction') await auth.failed(addr); // a refused account counts like a wrong password
+      console.warn(`Microsoft sign-in ${silent ? 'renewal' : ''} refused from ${addr}: ${err.message}`);
+      audit.record({ action: silent ? 'renew' : 'signin', result: 'refused', who: 'microsoft', via: 'microsoft', addr, detail: err.message });
+      if (silent) return sendHtml(res, 200, renewPage(false, err.message));
       return redirect(res, `/login?error=${encodeURIComponent(err.message)}`);
     }
   }
@@ -481,9 +542,9 @@ async function handleApi(req, res, urlPath, session) {
   const query = new URL(req.url, 'http://localhost').searchParams;
   let sessionId = query.get('session') || '';
   if (sessionId && !SESSION_ID.test(sessionId)) sessionId = '';
-  const scope = link?.session || null;
-  if (scope && sessionId && sessionId !== scope) return sendJson(res, 403, { error: 'This link is for another session.' });
-  if (!sessionId) sessionId = scope || sessions.default().id;
+  const scope = sessionScope(session, link);
+  if (scope && sessionId && !scope.includes(sessionId)) return sendJson(res, 403, { error: link ? 'This link is for another session.' : 'Your account isn\'t allowed into that session.' });
+  if (!sessionId) sessionId = defaultSessionFor(scope);
   const current = sessions.get(sessionId);
   // What this server is: the page adapts (no laptop readouts when hosted, a Sign out button,
   // and for a user, no integrations).
@@ -497,8 +558,13 @@ async function handleApi(req, res, urlPath, session) {
       linkYoutube: admin ? null : link?.youtube !== false, // false: the admin made this link without YouTube data
       // The session this window is on, and the one its link is for (users of such a link see it alone).
       session: current ? { id: current.id, name: current.name, live: current.live } : null,
-      linkSession: scope,
+      linkSession: scope && scope.length === 1 ? scope[0] : null,
+      allowedSessions: scope, // null: every session
       canOperate: operator, // adds feeds, runs sessions, takes screenshots (admins and operators)
+      // How this session was made and when it ends; a Microsoft one is renewed by the page before then.
+      sessionVia: sessionVia(session),
+      sessionExpiresAt: session.exp || null,
+      account: sessionVia(session) === 'microsoft' ? (({ email, name, role: r }) => ({ email, name, role: r }))(accounts.byId(session.linkId) || { email: '', name: 'Organisation account', role }) : null,
       // Who may sign in with Microsoft (admins), and whether that sign-in is on offer at all.
       access: admin ? accounts.info() : null,
       microsoftSignIn: auth.enabled && accounts.enabled(),
@@ -517,17 +583,18 @@ async function handleApi(req, res, urlPath, session) {
     res.write('retry: 3000\n\n');
     if (telemetry.latest) res.write(`data: ${JSON.stringify({ ...telemetry.latest, browser: browserStatus() })}\n\n`);
     res.write(`event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link, sessionId))}\n\n`);
-    sseClients.set(res, { ...session, sessionId });
+    sseClients.set(res, { ...session, sessionId, scope });
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     req.on('close', () => { clearInterval(ping); sseClients.delete(res); });
     return;
   }
   // ---- Sessions: the list, and starting, archiving, reopening and deleting one (admins) ----
   if (urlPath === '/api/sessions' && req.method === 'GET') {
-    return sendJson(res, 200, { version: sessions.version, sessions: sessions.list(), current: sessionId });
+    return sendJson(res, 200, { version: sessions.version, sessions: sessionsFor(scope), current: sessionId });
   }
   if (urlPath === '/api/sessions' && req.method === 'POST') {
     if (!operator) return sendJson(res, 403, { error: 'Only an admin or an operator can do this.' });
+    if (scope) return sendJson(res, 403, { error: 'Your account is limited to particular sessions, so it can\'t start new ones.' });
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     let made;
@@ -544,6 +611,7 @@ async function handleApi(req, res, urlPath, session) {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     const id = String(body.id || '');
+    if (scope && !scope.includes(id)) return sendJson(res, 403, { error: 'Your account isn\'t allowed into that session.' });
     const action = urlPath.slice('/api/sessions/'.length);
     const ok = action === 'archive' ? sessions.archive(id) : action === 'reopen' ? sessions.reopen(id) : sessions.remove(id);
     if (!ok) {
@@ -554,7 +622,7 @@ async function handleApi(req, res, urlPath, session) {
     // Its own windows learn it went live or quiet (the version moved on).
     const changed = sessions.get(id);
     if (changed) broadcast('wall', { version: changed.version, clientId: '', session: { id: changed.id, name: changed.name } }, id);
-    return sendJson(res, 200, { sessions: sessions.list() });
+    return sendJson(res, 200, { sessions: sessionsFor(scope) });
   }
   if (urlPath === '/api/wall' && req.method === 'GET') {
     const w = sessions.wallOf(sessionId);
@@ -719,38 +787,70 @@ async function handleApi(req, res, urlPath, session) {
   }
   // ---- Access: who may sign in with a Microsoft 365 account, and as what (admin) ----
   if (urlPath === '/api/accounts' && req.method === 'GET') return sendJson(res, 200, { access: accounts.info() });
-  if (urlPath === '/api/accounts' && req.method === 'POST') {
-    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
-    const body = await readBody(req, 2000);
-    const { error } = accounts.add({ email: body.email, role: body.role });
-    if (error) return sendJson(res, 400, { error, access: accounts.info() });
-    // A changed role: that account's open streams end, and its next request gets the new role.
-    const changed = accounts.find(body.email);
+  if (urlPath === '/api/accounts/audit' && req.method === 'GET') return sendJson(res, 200, { audit: audit.list(Math.min(500, Number(query.get('limit')) || 100)) });
+  // The sessions an account is limited to must exist.
+  const sessionsOf = (body) => {
+    if (body.sessions === undefined) return { sessions: undefined };
+    if (body.sessions === null || body.sessions === 'all' || (Array.isArray(body.sessions) && !body.sessions.length)) return { sessions: null };
+    if (!Array.isArray(body.sessions) || body.sessions.some((s) => !sessions.get(String(s)))) return { error: 'One of those sessions doesn\'t exist.' };
+    return { sessions: body.sessions.map(String) };
+  };
+  // An account whose role or sessions changed: its open streams end, and its next request
+  // carries the change.
+  const dropStreams = (id, keepRole) => {
     for (const [stream, c] of sseClients) {
-      if (c.linkId === changed?.id && c.role !== changed.role) {
+      if (c.linkId === id && (!keepRole || c.role !== keepRole)) {
         sseClients.delete(stream);
         stream.end();
       }
     }
+  };
+  const actor = sessionVia(session) === 'microsoft' ? accounts.byId(session.linkId)?.email || session.linkId : 'password admin';
+  if (urlPath === '/api/accounts' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 4000);
+    const scoped = sessionsOf(body);
+    if (scoped.error) return sendJson(res, 400, { error: scoped.error, access: accounts.info() });
+    const { error, account } = accounts.add({ email: body.email, role: body.role, sessions: scoped.sessions });
+    if (error) return sendJson(res, 400, { error, access: accounts.info() });
+    audit.record({ action: 'access', who: actor, via: sessionVia(session), addr: clientAddress(req), detail: `${account.email} allowed as ${account.role}${account.sessions ? ` for ${account.sessions.length} session(s)` : ''}` });
+    dropStreams(account.id);
+    return sendJson(res, 200, { access: accounts.info() });
+  }
+  if (urlPath === '/api/accounts/update' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 4000);
+    const scoped = sessionsOf(body);
+    if (scoped.error) return sendJson(res, 400, { error: scoped.error, access: accounts.info() });
+    const { error, account } = accounts.update(String(body.id || ''), { role: body.role, sessions: scoped.sessions });
+    if (error) return sendJson(res, 400, { error, access: accounts.info() });
+    audit.record({ action: 'access', who: actor, via: sessionVia(session), addr: clientAddress(req), detail: `${account.email}: ${body.role !== undefined ? `role ${account.role}` : ''}${scoped.sessions !== undefined ? ` sessions ${account.sessions ? account.sessions.length : 'all'}` : ''}`.trim() });
+    dropStreams(account.id);
     return sendJson(res, 200, { access: accounts.info() });
   }
   if (urlPath === '/api/accounts/remove' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     const id = String(body.id || '');
+    const gone = accounts.byId(id);
     if (!accounts.remove(id)) return sendJson(res, 404, { error: 'No such account.', access: accounts.info() });
-    for (const [stream, c] of sseClients) {
-      if (c.linkId === id) {
-        sseClients.delete(stream);
-        stream.end();
-      }
-    }
+    audit.record({ action: 'access', who: actor, via: sessionVia(session), addr: clientAddress(req), detail: `${gone?.email || id} removed` });
+    dropStreams(id);
+    return sendJson(res, 200, { access: accounts.info() });
+  }
+  if (urlPath === '/api/accounts/password' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const { error } = accounts.setPasswordSignIn(body.on === true);
+    if (error) return sendJson(res, 400, { error, access: accounts.info() });
+    audit.record({ action: 'access', who: actor, via: sessionVia(session), addr: clientAddress(req), detail: `password sign-in ${body.on === true ? 'on' : 'off'}` });
     return sendJson(res, 200, { access: accounts.info() });
   }
   if (urlPath === '/api/accounts/tenant' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const body = await readBody(req, 2000);
     accounts.setTenantOperators(body.on === true);
+    audit.record({ action: 'access', who: actor, via: sessionVia(session), addr: clientAddress(req), detail: `everyone in the organisation as operators: ${body.on === true ? 'on' : 'off'}` });
     if (body.on !== true) {
       const tenantId = accounts.tenantOperatorId();
       for (const [stream, c] of sseClients) {
@@ -760,13 +860,6 @@ async function handleApi(req, res, urlPath, session) {
         }
       }
     }
-    return sendJson(res, 200, { access: accounts.info() });
-  }
-  if (urlPath === '/api/accounts/password' && req.method === 'POST') {
-    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
-    const body = await readBody(req, 2000);
-    const { error } = accounts.setPasswordSignIn(body.on === true);
-    if (error) return sendJson(res, 400, { error, access: accounts.info() });
     return sendJson(res, 200, { access: accounts.info() });
   }
   // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations (admin) ----
@@ -822,7 +915,7 @@ async function handleApi(req, res, urlPath, session) {
       return sendJson(res, result.status, { shots: shotsInfo(), check: result.check || null, error: result.error });
     }
     if (action === 'client' && dest === onedrive) {
-      const result = await onedrive.saveClient({ clientId: body.clientId, clientSecret: body.clientSecret });
+      const result = await onedrive.saveClient({ clientId: body.clientId, clientSecret: body.clientSecret, tenantId: body.tenantId });
       return sendJson(res, result.status, { shots: shotsInfo(), check: result.check || null, error: result.error });
     }
     if (action === 'enabled') {
@@ -863,9 +956,17 @@ async function handleApi(req, res, urlPath, session) {
   sendJson(res, 404, { error: 'Not found' });
 }
 
-function sendHtml(res, status, html) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+function sendHtml(res, status, html, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(html);
+}
+
+// What a silent renewal (the wall's hidden frame going round Microsoft with prompt=none)
+// comes back to: it tells the wall whether the session was renewed, and until when.
+function renewPage(ok, message = '', exp = 0) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>IXG Wall</title></head><body>
+<script>try { window.parent.postMessage({ type: 'ixg-renewed', ok: ${ok ? 'true' : 'false'}, exp: ${Number(exp) || 0}, error: ${JSON.stringify(String(message))} }, location.origin); } catch (e) {}</script>
+</body></html>`;
 }
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -908,6 +1009,12 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (HOSTED) for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+  // The Microsoft round trip runs in the wall's own hidden frame when it renews a session,
+  // so these two answers may be framed by this site (and nobody else).
+  if (urlPath === '/api/auth/microsoft/callback' || urlPath === '/api/auth/microsoft/start') {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  }
   if (urlPath === '/healthz') return sendJson(res, 200, { ok: true });
 
   const session = auth.session(req);
@@ -917,7 +1024,9 @@ const server = http.createServer((req, res) => {
     // sign-in popup, a bookmarked link) goes to the sign-in page and comes back afterwards.
     const navigating = req.method === 'GET' && req.headers['sec-fetch-mode'] === 'navigate';
     if (urlPath.startsWith('/api/') && !navigating) return sendJson(res, 401, { error: 'Sign in required' });
-    return redirect(res, req.method === 'GET' && req.url !== '/' ? `/login?next=${encodeURIComponent(req.url)}` : '/login');
+    // A cookie that no longer signs in (expired, or the account or link gone): the sign-in page says so.
+    const lapsed = String(req.headers.cookie || '').includes(`${auth.cookie}=`) ? '&reason=expired' : '';
+    return redirect(res, req.method === 'GET' && req.url !== '/' ? `/login?next=${encodeURIComponent(req.url)}${lapsed}` : `/login${lapsed ? '?reason=expired' : ''}`);
   }
   if (urlPath.startsWith('/api/')) {
     handleApi(req, res, urlPath, session || { role: null, linkId: null }).catch((err) => sendJson(res, 500, { error: err.message }));
@@ -944,13 +1053,15 @@ const server = http.createServer((req, res) => {
   }
   // A window shows one session: /s/<id>. The bare address goes to the link's session, or
   // the live one started most recently.
-  const scopedTo = session?.linkId ? userLinks.get(session.linkId)?.session || null : null;
+  const scope = session ? sessionScope(session, session.linkId ? userLinks.get(session.linkId) : null) : null;
+  const home = defaultSessionFor(scope);
   if (urlPath === '/admin') return session?.role === 'admin' ? serveFile(res, 'index.html') : redirect(res, '/');
-  if (urlPath === '/') return redirect(res, `/s/${scopedTo || sessions.default().id}`);
-  const page = /^\/s\/([\w-]{1,64})$/.exec(urlPath);
-  if (page) {
-    if (scopedTo && page[1] !== scopedTo) return redirect(res, `/s/${scopedTo}`);
-    if (!sessions.get(page[1])) return redirect(res, '/');
+  if (urlPath === '/' || /^\/s\/[\w-]{1,64}$/.test(urlPath)) {
+    if (!home) return sendHtml(res, 403, oauthPage('No session to show', 'None of the sessions your account may see exists any more. Ask an admin to allow you into a current one.', false));
+    if (urlPath === '/') return redirect(res, `/s/${home}`);
+    const id = urlPath.slice(3);
+    if (scope && !scope.includes(id)) return redirect(res, `/s/${home}`);
+    if (!sessions.get(id)) return redirect(res, '/');
     return serveFile(res, 'index.html');
   }
   // The page's own files, asked for relative to /s/<id> (style.css → /s/style.css, fonts/…):

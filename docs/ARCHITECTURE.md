@@ -18,8 +18,12 @@ There are no runtime dependencies: Node's standard library on the server, plain 
 server.js               HTTP server: static files, sign-in gate, JSON API, SSE stream
 backend/
   config.js             every environment setting, validated at startup
-  accounts.js           Microsoft 365 sign-in (the OneDrive app registration, openid + User.Read) and the
-                        allow-list of accounts with roles; optionally the whole organisation as operators
+  accounts.js           Microsoft 365 sign-in (Entra ID, auth code + PKCE + nonce, confidential client) and the
+                        allow-list: accounts by Entra Object ID with a role and optional sessions; Entra app
+                        roles; optionally the whole organisation as operators (docs/MICROSOFT_SSO_SETUP.md)
+  ms-token.js           checks an ID token: RS256 signature against Microsoft's keys, issuer, audience,
+                        times, nonce, tenant; refuses personal accounts
+  audit.js              the sign-in audit (DATA_DIR/auth-audit.log): sign-ins, refusals, sign-outs, changes
   auth.js               sign-in: signed session cookie naming the role (admin | operator | user) and the
                         link or account it came from, lockout; the
                         cookie's name carries the port, so two walls on one computer don't sign each
@@ -190,7 +194,7 @@ YouTube embed limits, measured on the wall laptops:
 
 Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` header and a same-site `Origin`.
 
-**Roles.** A Microsoft 365 sign-in gets the role listed for the account (`accounts.js`; the sign-in page leads with it, and `GET /api/login/options` tells the page what is on offer); a password sign-in is an admin, refused by `/api/login` once an admin switches the password off (`POST /api/accounts/password`, allowed only with Microsoft sign-in set and an admin account listed, and the password comes back by itself if the Microsoft app goes); a link is an operator or a user (the link's role). Without a password, every request is an admin's. The Admin center (`/admin`, the same page in a mode that shows only the `[data-admin-center]` sections and no wall) is served to admins alone; the integrations, links and screenshot destinations live there and never show on the wall. An operator (`canOperate`) adds feeds, runs sessions, changes screenshot settings and takes screenshots; a user does none of those. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
+**Roles.** A Microsoft 365 sign-in (8 hours, renewed quietly by the page) gets the role listed for the account or its Entra app role, and only the sessions listed for it (a scoped account's requests about another session get 403, its pages go back to its own, and it can't start sessions) (`accounts.js`; the sign-in page leads with it, and `GET /api/login/options` tells the page what is on offer); a password sign-in is an admin, refused by `/api/login` once an admin switches the password off (`POST /api/accounts/password`, allowed only with Microsoft sign-in set and an admin account listed, and the password comes back by itself if the Microsoft app goes); a link is an operator or a user (the link's role). Without a password, every request is an admin's. The Admin center (`/admin`, the same page in a mode that shows only the `[data-admin-center]` sections and no wall) is served to admins alone; the integrations, links and screenshot destinations live there and never show on the wall. An operator (`canOperate`) adds feeds, runs sessions, changes screenshot settings and takes screenshots; a user does none of those. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
 
 | Method & path | What |
 |---|---|
@@ -198,7 +202,8 @@ Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` hea
 | `GET /api/login/options` | no sign-in: `{ password, microsoft }`, what the sign-in page may offer |
 | `GET /api/auth/microsoft/start?next=` · `GET /api/auth/microsoft/callback` | the Microsoft 365 round trip; a refusal lands on `/login?error=` with the reason |
 | `POST /api/login` · `POST /api/logout` | sign in as an admin (`{ password }`; 403 once the password is switched off) / out |
-| `GET /api/accounts` · `POST /api/accounts` · `POST /api/accounts/remove` · `POST /api/accounts/tenant` · `POST /api/accounts/password` | admins: the allow-list; add or re-role `{ email, role }`; remove `{ id }`; everyone in the organisation as operators `{ on }`; the password fallback `{ on }` |
+| `GET /api/accounts` · `POST /api/accounts` · `POST /api/accounts/update` · `POST /api/accounts/remove` · `POST /api/accounts/tenant` · `POST /api/accounts/password` · `GET /api/accounts/audit` | admins: the allow-list; add `{ email, role, sessions }`; change `{ id, role?, sessions? }` (`sessions`: ids, or null for all); remove `{ id }`; everyone in the organisation as operators `{ on }`; the password fallback `{ on }`; the latest audit entries |
+| `GET /api/auth/microsoft/start?silent=1` | the page's hidden-frame renewal (`prompt=none`); the callback answers the frame with `postMessage({ type: 'ixg-renewed', ok, exp })` |
 | `GET /join#token` · `POST /api/join` | a user link: the page posts `{ link }` and gets a user session. The token is after the `#`, so it never reaches server logs |
 | `GET /api/links` · `POST /api/links` · `POST /api/links/revoke` | admins: list (with each link's address), generate `{ name, days }` (0 = until revoked), revoke `{ id }` |
 | `GET /api/config` | `{ hosted, auth, role, linkName, ytKey }`: the page adapts its UI to this |

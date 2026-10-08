@@ -88,6 +88,8 @@
     </div>
   </header>
   <div id="banner" class="notice notice-warn" role="status" hidden></div>
+  <!-- A Microsoft sign-in about to end that couldn't be renewed quietly -->
+  <div id="session-notice" class="notice notice-warn session-notice" role="status" hidden><span id="session-notice-text"></span><button type="button" id="session-renew" class="btn btn-sm">Sign in again</button></div>
 
   <main class="wall">
     <section id="feeds-panel" class="feeds-panel" role="tabpanel" aria-labelledby="feeds-tab">
@@ -245,6 +247,7 @@
     </div>
     <!-- Everything under the header scrolls; the header (and Close) stays put -->
     <div class="sheet-body">
+      <p class="hint account-info" id="account-info" hidden></p>
       <section class="sheet-section" id="access-settings" data-admin-only data-admin-center hidden>
         <p class="telemetry muted section-title">Access · Microsoft 365 sign-in</p>
         <p class="yt-status" id="access-status" role="status"></p>
@@ -256,6 +259,9 @@
               <option value="operator">Operator</option>
               <option value="admin">Admin</option>
               <option value="user">User</option>
+            </select>
+            <select class="input select link-days" id="access-sessions" aria-label="Sessions">
+              <option value="">All sessions</option>
             </select>
             <button type="submit" class="btn btn-sm">Allow</button>
           </div>
@@ -269,8 +275,10 @@
           <input class="switch" type="checkbox" role="switch" id="access-password">
           <span>The wall password also signs admins in (a fallback beside Microsoft)</span>
         </label>
-        <p class="hint">Whoever signs in with a listed Microsoft 365 account gets its role; anyone else is refused. Microsoft leads the sign-in page; the password can be switched off once an admin account is listed.</p>
-        <details class="hint setup"><summary>Setup</summary>Uses the Microsoft app from OneDrive below. In that app registration, under Authentication, add a second Web redirect URI: <code id="access-redirect"></code>. Removing an account, or changing its role, takes effect on its next request.</details>
+        <p class="hint">Whoever signs in with a listed Microsoft 365 account gets its role (<strong>admin</strong>: everything; <strong>operator</strong>: runs the wall; <strong>user</strong>: operates it) and sees the sessions chosen for it; anyone else, personal Microsoft accounts and other organisations are refused. An account is known by its Microsoft Object ID from its first sign-in on, so a renamed email keeps its access. Microsoft leads the sign-in page; the password can be switched off once an admin account is listed.</p>
+        <details class="hint setup"><summary>Setup</summary>Uses the Microsoft app from OneDrive below (docs/MICROSOFT_SSO_SETUP.md has every step). In that app registration, under Authentication, add a second Web redirect URI, <code id="access-redirect"></code>, and as the front-channel logout URL <code id="access-logout"></code>. App roles named <code>IXG.Admin</code>, <code>IXG.Operator</code> and <code>IXG.User</code>, assigned in Entra, also get in. Removing an account, or changing its role, takes effect on its next request; a Microsoft sign-in lasts <span id="access-hours">8</span> hours and the wall renews it quietly.</details>
+        <p class="telemetry muted section-title">Recent sign-ins and changes</p>
+        <ul class="session-list audit-list" id="access-audit" aria-label="Sign-in audit"></ul>
       </section>
       <section class="sheet-section" id="links-settings" data-admin-only data-admin-center hidden>
         <p class="telemetry muted section-title">User links</p>
@@ -566,8 +574,10 @@
             <label class="key-label" for="onedrive-client-id">Microsoft app's Application (client) ID</label>
             <input class="input" id="onedrive-client-id" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
             <label class="key-label" for="onedrive-client-secret">Client secret (its Value)</label>
+            <input class="input" id="onedrive-client-secret" type="password" autocomplete="off" spellcheck="false">
+            <label class="key-label" for="onedrive-tenant-id">Directory (tenant) ID, for a single-tenant app</label>
             <div class="key-row">
-              <input class="input" id="onedrive-client-secret" type="password" autocomplete="off" spellcheck="false">
+              <input class="input" id="onedrive-tenant-id" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (empty: any organisation)">
               <button type="submit" class="btn btn-sm">Save app</button>
             </div>
           </form>
@@ -585,7 +595,7 @@
             <button type="button" id="onedrive-signout" class="btn btn-ghost btn-sm" hidden>Sign out</button>
             <button type="button" id="onedrive-client-change" class="btn btn-ghost btn-sm" hidden>Change app</button>
           </div>
-          <p class="hint">Register an app, sign in with a Microsoft account that can edit the folder, then paste the folder's sharing link (Share → Copy link).</p><details class="hint setup"><summary>Setup (Azure → App registrations)</summary>At <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">App registrations</a>, register an app for <em>accounts in any organizational directory and personal Microsoft accounts</em>. Authentication: add a <strong>Web</strong> redirect URI of <code id="onedrive-redirect"></code>. API permissions: Microsoft Graph delegated <strong>Files.ReadWrite</strong>, <strong>User.Read</strong>, <strong>offline_access</strong>. Certificates &amp; secrets: a client secret; copy its Value. Paste the Application (client) ID and that secret above.</details>
+          <p class="hint">Register an app, sign in with a Microsoft account that can edit the folder, then paste the folder's sharing link (Share → Copy link).</p><details class="hint setup"><summary>Setup (Azure → App registrations)</summary>At <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">App registrations</a>, register an app for <em>accounts in this organizational directory only</em> (single tenant; the same app serves the Microsoft 365 sign-in). Authentication: add a <strong>Web</strong> redirect URI of <code id="onedrive-redirect"></code>. API permissions: Microsoft Graph delegated <strong>Files.ReadWrite</strong>, <strong>User.Read</strong>, <strong>offline_access</strong>. Certificates &amp; secrets: a client secret; copy its Value. Paste the Application (client) ID, that secret and the Directory (tenant) ID above.</details>
         </div>
       </section>
       <section class="sheet-section" id="terms">

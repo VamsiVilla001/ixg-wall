@@ -55,7 +55,7 @@ class Auth {
     const given = Buffer.from(sig);
     if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
     if (id !== '-' && !this.principalActive(role, id)) return null;
-    return { role, linkId: id === '-' ? null : id };
+    return { role, linkId: id === '-' ? null : id, exp: Number(exp) };
   }
 
   // Who is asking: { role, linkId }, or null when not signed in. Always an admin when no

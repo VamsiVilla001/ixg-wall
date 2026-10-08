@@ -29,6 +29,11 @@
     .role-toggle button:hover { color: var(--foreground); }
     .role-toggle button[aria-checked="true"] { background: var(--foreground); color: var(--background); }
     .role-toggle button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+    #microsoft { display: inline-flex; align-items: center; justify-content: center; gap: 10px; }
+    #microsoft[aria-busy="true"] { opacity: .7; pointer-events: none; }
+    .ms-logo { flex: none; }
+    /* Signed out, or the session ended: a quiet note above the form */
+    .note { margin: 0; padding: 8px 10px; border-left: 2px solid var(--muted-foreground); background: var(--secondary); color: var(--foreground); font-size: 12.5px; line-height: 1.5; }
     /* The other ways in, under the main button: plain text links */
     .ways { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: center; }
     .ways button { padding: 0; border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
@@ -44,7 +49,8 @@
         <h1 id="title">Sign in to the wall</h1>
       </div>
       <!-- Microsoft 365: the main way in once the admin set it up -->
-      <a class="btn btn-accent" id="microsoft" href="/api/auth/microsoft/start" hidden>Sign in with Microsoft</a>
+      <a class="btn btn-accent" id="microsoft" href="/api/auth/microsoft/start" hidden><svg class="ms-logo" viewBox="0 0 21 21" aria-hidden="true" width="16" height="16"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg><span id="microsoft-text">Sign in with Microsoft</span></a>
+      <p class="note" id="note" hidden></p>
       <!-- The wall password (an admin) or a user link -->
       <div class="form" id="form" hidden>
         <div class="role-toggle" role="radiogroup" aria-label="Sign in as" id="roles">
@@ -167,6 +173,19 @@
 
       function start() {
         $('microsoft').href = `/api/auth/microsoft/start?next=${encodeURIComponent(next)}`;
+        // Going to Microsoft: the button says so until the page leaves.
+        $('microsoft').addEventListener('click', () => {
+          $('microsoft').setAttribute('aria-busy', 'true');
+          $('microsoft-text').textContent = 'Opening Microsoft sign-in…';
+          setTimeout(() => { $('microsoft').removeAttribute('aria-busy'); $('microsoft-text').textContent = 'Sign in with Microsoft'; }, 15000);
+        });
+        // Why we're here: signed out, or a session that ended or was taken away.
+        const note = params.get('signedout') ? 'You\'re signed out of the wall. Microsoft may still keep you signed in to other apps in this browser.'
+          : params.get('reason') === 'expired' ? 'Your sign-in ended, or your access changed. Sign in again to continue.' : '';
+        if (note) {
+          $('note').textContent = note;
+          $('note').hidden = false;
+        }
         // Opened from a user link (/join#token): sign in with it straight away, and take the
         // token out of the address bar and history.
         const token = location.hash.slice(1);

@@ -195,12 +195,12 @@ class Secrets {
 
   msClientInfo() {
     const c = this.msClient();
-    return { set: !!c, source: this.envMsClient ? 'env' : c ? 'saved' : null, clientId: c?.clientId || '' };
+    return { set: !!c, source: this.envMsClient ? 'env' : c ? 'saved' : null, clientId: c?.clientId || '', tenantId: c?.tenantId || '' };
   }
 
   setMsClient(client) {
     if (this.envMsClient) return false;
-    if (client) this.data.msClient = { clientId: client.clientId, clientSecret: client.clientSecret };
+    if (client) this.data.msClient = { clientId: client.clientId, clientSecret: client.clientSecret, tenantId: client.tenantId || '' };
     else delete this.data.msClient;
     this.write();
     return true;

@@ -71,9 +71,11 @@ module.exports = {
   MS_CLIENT: {
     clientId: (process.env.MS_CLIENT_ID || '').trim(),
     clientSecret: (process.env.MS_CLIENT_SECRET || '').trim(),
+    tenantId: (process.env.MS_TENANT_ID || '').trim().toLowerCase(), // the Directory (tenant) ID of a single-tenant app
   },
   // Optional: Microsoft 365 accounts that are admins from the start (comma-separated emails),
   // so the first admin can sign in with Microsoft before anyone is listed in the Admin center.
-  ADMINS: (process.env.IXG_ADMINS || '').split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.includes('@')),
+  // The first admins: Microsoft 365 accounts by email, or by Object ID (the stable identity).
+  ADMINS: (process.env.IXG_ADMINS || '').split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.includes('@') || /^[0-9a-f-]{36}$/.test(s)),
   problems,
 };

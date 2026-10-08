@@ -12,13 +12,29 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const { retrying, Queue } = require('./retry');
 
+// Microsoft's endpoints. The authority is the organisation's tenant when the app is
+// registered single-tenant (its Directory (tenant) ID, set with the client), otherwise
+// "organizations": work and school accounts of any tenant, never personal ones. Tests point
+// IXG_MS_LOGIN_URL (or the two older single-endpoint overrides) at a fake.
+const LOGIN = (process.env.IXG_MS_LOGIN_URL || 'https://login.microsoftonline.com').replace(/\/+$/, '');
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MS = {
-  AUTH_URL: process.env.IXG_MS_AUTH_URL || 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-  TOKEN_URL: process.env.IXG_MS_TOKEN_URL || 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+  LOGIN,
   GRAPH: process.env.IXG_GRAPH_API || 'https://graph.microsoft.com/v1.0',
+  // fallback: 'organizations' for the sign-in; the OneDrive archive passes 'common', so a
+  // personal OneDrive folder keeps working when no tenant is set.
+  authority: (tenantId, fallback = 'organizations') => (GUID.test(tenantId || '') ? tenantId.toLowerCase() : fallback),
+  authUrl: (tenantId, fallback) => process.env.IXG_MS_AUTH_URL || `${LOGIN}/${MS.authority(tenantId, fallback)}/oauth2/v2.0/authorize`,
+  tokenUrl: (tenantId, fallback) => process.env.IXG_MS_TOKEN_URL || `${LOGIN}/${MS.authority(tenantId, fallback)}/oauth2/v2.0/token`,
+  jwksUrl: (tenantId) => `${LOGIN}/${MS.authority(tenantId)}/discovery/v2.0/keys`,
+  logoutUrl: (tenantId) => `${LOGIN}/${MS.authority(tenantId)}/oauth2/v2.0/logout`,
+  // The issuer an ID token names: always the account's own tenant, whatever the authority.
+  issuer: (tid) => `${LOGIN}/${tid}/v2.0`,
+  // Microsoft's tenant for personal accounts (outlook.com, live.com): never an organisation's.
+  PERSONAL_TENANT: '9188040d-6c67-4c5b-b112-36a304b66dad',
 };
 const SCOPE = 'offline_access Files.ReadWrite User.Read';
-const CLIENT_ID_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CLIENT_ID_FORMAT = GUID;
 const STATE_TTL_MS = 10 * 60000;
 const TIMEOUT_MS = 60000;
 const SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024;  // Graph's limit for one PUT; bigger files go by upload session
@@ -76,7 +92,7 @@ class OneDrive extends EventEmitter {
   // secret were accepted; "invalid_client" / "unauthorized_client" means one is wrong.
   async checkClient(client) {
     try {
-      const res = await fetch(MS.TOKEN_URL, {
+      const res = await fetch(MS.tokenUrl(client.tenantId, 'common'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ client_id: client.clientId, client_secret: client.clientSecret, grant_type: 'authorization_code', code: 'ixg-wall-client-check', redirect_uri: this.redirectUri, scope: SCOPE }),
@@ -88,7 +104,7 @@ class OneDrive extends EventEmitter {
       if (/AADSTS700016/.test(text)) return { status: 'invalid', message: 'Microsoft has no app with this client ID: check it, and that the app registration wasn\'t deleted.' };
       if (/AADSTS7000215|AADSTS7000222/.test(text) || body.error === 'invalid_client') return { status: 'invalid', message: 'Microsoft rejected the client secret: copy its value again from the app registration (a secret expires; make a new one if it has).' };
       if (/AADSTS50011/.test(text)) return { status: 'redirect', message: `Microsoft doesn't know this wall's address yet: in the app registration, under Authentication, add the Web redirect URI ${this.redirectUri}` };
-      if (/AADSTS50194|AADSTS90002/.test(text)) return { status: 'invalid', message: 'This app registration is single-tenant: either sign in with an account of that tenant, or set it to "accounts in any organizational directory and personal Microsoft accounts".' };
+      if (/AADSTS50194|AADSTS90002/.test(text)) return { status: 'invalid', message: 'This app registration is single-tenant: give its Directory (tenant) ID with the client ID and secret.' };
       return { status: 'unchecked', message: `Microsoft answered ${body.error || `HTTP ${res.status}`}${text ? ` (${text.slice(0, 160)})` : ''}.` };
     } catch (err) {
       return { status: 'unchecked', message: `Couldn't reach Microsoft to check the client (${err.message}).` };
@@ -97,9 +113,10 @@ class OneDrive extends EventEmitter {
 
   // Saves anyone's app, or removes it with both fields empty. A client Microsoft refuses
   // isn't saved. A different client signs the account out. Returns { status: HTTP code, error?, check? }.
-  async saveClient({ clientId, clientSecret }) {
+  async saveClient({ clientId, clientSecret, tenantId }) {
     const id = String(clientId || '').trim();
     const secret = String(clientSecret || '').trim();
+    const tenant = String(tenantId || '').trim().toLowerCase();
     if (this.secrets.msClientInfo().source === 'env') return { status: 409, error: 'This server sets the Microsoft app itself (MS_CLIENT_ID), so it can\'t be changed here.' };
     if (!id && !secret) {
       await this.signOut();
@@ -109,10 +126,11 @@ class OneDrive extends EventEmitter {
       return { status: 200, check: null };
     }
     if (!CLIENT_ID_FORMAT.test(id) || secret.length < 10) return { status: 400, error: 'That isn\'t a Microsoft app: the client ID is a GUID (Application (client) ID on the app\'s Overview page) and the secret its Value under Certificates & secrets.' };
-    const check = await this.checkClient({ clientId: id, clientSecret: secret });
+    if (tenant && !GUID.test(tenant)) return { status: 400, error: 'The Directory (tenant) ID is a GUID (on the app\'s Overview page), or empty for an app open to any organisation.' };
+    const check = await this.checkClient({ clientId: id, clientSecret: secret, tenantId: tenant });
     if (check.status === 'invalid') return { status: 400, error: check.message, check };
     if (this.secrets.msClient()?.clientId !== id) await this.signOut();
-    this.secrets.setMsClient({ clientId: id, clientSecret: secret });
+    this.secrets.setMsClient({ clientId: id, clientSecret: secret, tenantId: tenant });
     this.clientCheck = { ...check, at: Date.now() };
     this.emit('change');
     return { status: 200, check };
@@ -126,7 +144,7 @@ class OneDrive extends EventEmitter {
     for (const [s, exp] of this.pending) if (exp < now) this.pending.delete(s);
     const state = crypto.randomBytes(24).toString('base64url');
     this.pending.set(state, now + STATE_TTL_MS);
-    return `${MS.AUTH_URL}?${new URLSearchParams({
+    return `${MS.authUrl(client.tenantId, 'common')}?${new URLSearchParams({
       client_id: client.clientId,
       response_type: 'code',
       redirect_uri: this.redirectUri,
@@ -161,7 +179,7 @@ class OneDrive extends EventEmitter {
     if (!client) throw Object.assign(new Error(describe('not_set_up')), { code: 'not_set_up' });
     let res;
     try {
-      res = await fetch(MS.TOKEN_URL, {
+      res = await fetch(MS.tokenUrl(client.tenantId, 'common'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ client_id: client.clientId, client_secret: client.clientSecret, ...params }),
