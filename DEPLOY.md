@@ -4,7 +4,7 @@ The hosted wall is the same app the laptops run, started with `IXG_HOSTED=1` on 
 
 - **Sign-in, two roles, no usernames:**
   - **Admin:** the wall password, set on the server. Admins manage the YouTube key, the channel sign-in and user links.
-  - **User:** a link an admin generates. Users operate the wall (order, remove and rename feeds, switch sessions, layout, playback). They can't add feeds or change a feed's link, and have no YouTube settings: whether a link ships the YouTube numbers and ingest health is the admin's choice when making it (on by default). Those are read with the admin's key and channel sign-ins, which users never see or change. The server enforces all of this, not just the page.
+  - **User:** a link an admin generates. Users operate the wall (order, remove and rename feeds, switch sessions, layout, playback). They can't add feeds or change a feed's link, and have no YouTube settings: whether a link ships the YouTube numbers and ingest health is the admin's choice when making it (on by default), as is whether it opens one session only (a client review link for one event, which sees nothing of the others) or any session. Those are read with the admin's key and channel sign-ins, which users never see or change. The server enforces all of this, not just the page.
   - A browser stays signed in for 30 days.
 - **YouTube key on the server:** the key is kept server-side and never sent to a browser.
 - **No laptop features:** no managed wall window and no laptop telemetry, because the server isn't the screen showing the wall. Drift correction, refreshes, the load queue and the YouTube analytics all work as before.
@@ -101,7 +101,7 @@ The OAuth client can come from anyone's Google Cloud project; nothing is built i
 
 ### 7. Source screenshots on the server (optional)
 
-The server takes the source screenshots itself, in a hidden Chrome, exactly as a laptop wall does: at each feed's new PCV and at a stream's end, named language first and saved under `/var/lib/ixg-wall/screenshots/<session name>/` (or `IXG_SCREENSHOT_DIR`). Nobody's browser is involved and nothing ever pops up on an operator's screen. Since the files are on the server, set up Slack (Settings → Source screenshots → Post screenshots to Slack, or `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` in `ixg-wall.env`) so each one is posted to the team as it's taken.
+The server takes the source screenshots itself, in a hidden Chrome, exactly as a laptop wall does: at each feed's new PCV and at a stream's end, named language first and saved under `/var/lib/ixg-wall/screenshots/<session name>/<YYYY-MM-DD>/<feed name>/` (or `IXG_SCREENSHOT_DIR` in place of the first part). Nobody's browser is involved and nothing ever pops up on an operator's screen. Since the files are on the server, set up a destination (Settings → Source screenshots): a Slack channel (`SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` in `ixg-wall.env` also works), a Google Drive folder (sign in with a Google account that can edit it; the Google Cloud project of the OAuth client needs the Google Drive API enabled) or a OneDrive folder (an app registered in your Microsoft 365 tenant with a Web redirect URI of `https://wall.yourcompany.com/api/onedrive/callback`, or `MS_CLIENT_ID` / `MS_CLIENT_SECRET` in `ixg-wall.env`; then sign in with an account that can edit the folder). Each screenshot then reaches the team as it's taken, under the same session/date/feed folders.
 
 1. Install Chrome on the server: `sudo apt-get install -y chromium-browser` (Ubuntu) or Google's `google-chrome-stable` package. The wall finds it at `/usr/bin/chromium-browser`, `/usr/bin/chromium` or `/usr/bin/google-chrome`; set `IXG_BROWSER=/path/to/chrome` in `ixg-wall.env` for another location.
 2. `sudo systemctl restart ixg-wall`. Settings → Source screenshots then says the backend takes them.
@@ -140,6 +140,7 @@ The wall's live updates are an event stream. The server pings it every 15 s, ins
 | Status / restart | `systemctl status ixg-wall` · `sudo systemctl restart ixg-wall` |
 | Live logs | `journalctl -u ixg-wall -f` (Caddy: `journalctl -u caddy -f`) |
 | Change the password | Edit `IXG_PASSWORD` in `/etc/ixg-wall/ixg-wall.env`, then restart. Everyone is signed out, users included; their links keep working. |
+| Run several events at once | Nothing on the server: under **Session** on the wall, start a session per event. Each is live at its own address (`https://wall.yourcompany.com/s/<id>`), polled in the same YouTube call as the others, with its own PCV, screenshot folder and (optionally) user links. Archive a session when its event is over. |
 | Let someone in as a user | Settings → **User links** → name it → **Generate link**, and send them the link. **Revoke** signs out everyone who used it. |
 | Back up | `/var/lib/ixg-wall` (wall, key, audience history) and `/etc/ixg-wall`. On Lightsail, enable automatic snapshots. |
 

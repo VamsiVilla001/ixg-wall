@@ -15,7 +15,7 @@ const HISTORY_FILE = path.join(DATA_DIR, 'youtube-history.json');
 const POLL_DEFAULT_S = 30;              // Settings → YouTube API → Refresh every (15–300 s)
 const CHANNELS_EVERY_MS = 10 * 60000;   // subscriber counts barely move; 1 unit per 50 channels
 const HISTORY_MS = 24 * 3600e3;
-const SAVE_EVERY_MS = 5 * 60000;
+const SAVE_EVERY_MS = 60000;            // a backend killed outright loses at most a minute of history
 const DAILY_QUOTA = 10000;              // YouTube's default; videos.list and channels.list cost 1 unit
 const TREND_MS = 10 * 60000;
 const RATE_WINDOW_MS = 60 * 60000;
@@ -35,9 +35,9 @@ function seconds(iso) {
 }
 
 class YouTubeStats extends EventEmitter {
-  constructor({ wallStore, credentials, pcv = null }) {
+  constructor({ store, credentials, pcv = null }) {
     super();
-    this.wallStore = wallStore;
+    this.store = store;             // the sessions: every live one's feeds are polled (session-store.js)
     this.credentials = credentials; // whoever's API key is saved; pages only ever see keyInfo()
     this.pcv = pcv;               // each broadcast's peak concurrent viewers (pcv.js)
     this.failures = 0;            // polls failed in a row: the next waits longer
@@ -95,18 +95,20 @@ class YouTubeStats extends EventEmitter {
     this.pcv?.save();
   }
 
-  // Seconds between polls, from the wall's settings.
+  // Seconds between polls: the shortest any live session asks for in its settings.
   pollMs() {
-    const s = Number(this.wallStore.wall?.settings?.ytPollSec);
-    return (Number.isFinite(s) ? Math.min(300, Math.max(15, s)) : POLL_DEFAULT_S) * 1000;
+    const asked = this.store.live().map((s) => Number(s.settings?.ytPollSec)).filter((n) => Number.isFinite(n));
+    const s = asked.length ? Math.min(...asked) : POLL_DEFAULT_S;
+    return Math.min(300, Math.max(15, s)) * 1000;
   }
 
   key() {
     return this.credentials.apiKey();
   }
 
+  // Every live session's feeds, once each: one poll serves them all.
   ids() {
-    return [...new Set((this.wallStore.wall?.streams || []).map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))];
+    return [...new Set(this.store.feeds().map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))];
   }
 
   // The wall or key was saved: a new key, new feeds or a new interval take effect within seconds.
@@ -247,19 +249,23 @@ class YouTubeStats extends EventEmitter {
 
   record(now, ids) {
     const cutoff = now - HISTORY_MS;
-    let total = 0;
-    let any = false;
     for (const id of ids) {
       const v = this.latest[id];
       if (!v || v.missing) continue;
       (this.history[id] ||= []).push([now, v.viewers, v.likes, v.views, v.comments]);
-      if (v.viewers != null) {
+    }
+    // One total per live session, stamped with it: its Feeds tab's CCV history and PCV.
+    for (const s of this.store.live()) {
+      let total = 0;
+      let any = false;
+      for (const id of new Set(s.streams.map((x) => x.source?.id))) {
+        const v = this.latest[id];
+        if (!v || v.missing || v.viewers == null) continue;
         total += v.viewers;
         any = true;
       }
+      if (any) this.totals.push([now, total, s.id]);
     }
-    // Stamped with the session, so the wall's PCV is this session's and not an earlier event's.
-    if (any) this.totals.push([now, total, this.wallStore.wall?.session?.id ?? null]);
     for (const [id, series] of Object.entries(this.history)) {
       while (series.length && series[0][0] < cutoff) series.shift();
       if (!series.length) delete this.history[id];
@@ -267,11 +273,14 @@ class YouTubeStats extends EventEmitter {
     while (this.totals.length && this.totals[0][0] < cutoff) this.totals.shift();
   }
 
-  // What the wall shows: the latest numbers plus the analysis, for the feeds on the wall.
-  state() {
+  // What a window of one session shows: the latest numbers plus the analysis for its feeds
+  // (every live session's without a session), and that session's wall total and PCV.
+  state(sessionId = null) {
     const now = Date.now();
     const videos = {};
-    for (const id of this.ids()) {
+    const session = sessionId ? this.store.get(sessionId) : null;
+    const ids = session ? [...new Set(session.streams.map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))] : this.ids();
+    for (const id of ids) {
       const v = this.latest[id];
       if (!v) continue;
       videos[id] = v.missing ? v : {
@@ -281,10 +290,9 @@ class YouTubeStats extends EventEmitter {
         pcv: this.pcv?.view(id) ?? null, // current CCV, sampled PCV and Studio's, kept apart
       };
     }
-    const totalSeries = this.totals.map(([t, v]) => [t, v]);
+    const totalSeries = this.series('total', sessionId);
     // The wall's PCV: the highest wall-total CCV read in this session (sampled, like a feed's).
-    const session = this.wallStore.wall?.session?.id ?? null;
-    const wallPcv = peakOf(this.totals.filter((p) => (p[2] ?? null) === session), 1);
+    const wallPcv = peakOf(totalSeries, 1);
     return {
       status: this.status,
       error: this.error,
@@ -299,10 +307,23 @@ class YouTubeStats extends EventEmitter {
     };
   }
 
-  // Raw series for a chart: one video's [t, viewers, likes, views, comments], or the wall total.
-  // A Studio minute is [t, average viewers, null, null, null, peak viewers].
-  series(id) {
-    if (id === 'total') return this.totals;
+  // Wall totals recorded before they were stamped with a session (one session at a time
+  // then) belong to the session that was live, so its Feeds-tab PCV keeps them.
+  adoptUnstamped(sessionId) {
+    let changed = false;
+    for (const p of this.totals) {
+      if (p[2] == null) {
+        p[2] = sessionId;
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
+  // Raw series for a chart: one video's [t, viewers, likes, views, comments], or a session's
+  // wall total. A Studio minute is [t, average viewers, null, null, null, peak viewers].
+  series(id, sessionId = null) {
+    if (id === 'total') return this.totals.filter((p) => (p[2] ?? null) === sessionId).map(([t, v]) => [t, v]);
     const wall = this.history[id] || [];
     const minutes = this.studio?.minutes(id);
     if (!minutes?.length) return wall;

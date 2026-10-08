@@ -16,12 +16,12 @@ const REASON = { peak: 'new PCV', end: 'stream ended' };
 const BACKEND = 'backend';           // the client name the backend claims under
 
 class AutoCapture extends EventEmitter {
-  constructor({ youtube, pcv, ingest = null, wallStore, now = () => Date.now() }) {
+  constructor({ youtube, pcv, ingest = null, store, now = () => Date.now() }) {
     super();
     this.youtube = youtube;
     this.pcv = pcv;
     this.ingest = ingest;
-    this.wallStore = wallStore;
+    this.store = store;     // every live session's feeds, each with its session and settings
     this.now = now;
     this.feeds = new Map(); // video id -> { captured, capturedAt, liveSeen, ended }
     this.jobs = [];         // [{ job, id, reason: peak | end, ccv, label, createdAt, claimedAt, client, tries, holdUntil, busyNoted }]
@@ -44,18 +44,32 @@ class AutoCapture extends EventEmitter {
     return this.log.slice(-60);
   }
 
-  enabled() {
-    return this.wallStore.wall?.settings?.autoCapture !== false;
+  // The feed as a live session holds it (the first, when several do): its label, session
+  // and that session's settings. null once no live session has it.
+  feed(id) {
+    return this.store.feeds().find((s) => s.source?.id === id) || null;
+  }
+
+  // Settings → Source screenshots, in the session that holds the feed; with no feed named,
+  // whether any live session takes them.
+  enabled(id = null) {
+    if (id) return this.feed(id)?.settings?.autoCapture !== false;
+    return this.store.live().some((s) => s.settings?.autoCapture !== false);
   }
 
   // Settings → Source screenshots: the least time between two new-PCV screenshots of a feed.
-  peakGapMs() {
-    const m = Number(this.wallStore.wall?.settings?.autoCaptureMin);
+  peakGapMs(id) {
+    const m = Number(this.feed(id)?.settings?.autoCaptureMin);
     return (Number.isFinite(m) ? Math.min(60, Math.max(1, m)) : PEAK_GAP_MIN) * 60000;
   }
 
   label(id) {
-    return (this.wallStore.wall?.streams || []).find((s) => s.source?.id === id)?.label || '';
+    return this.feed(id)?.label || '';
+  }
+
+  // The session a feed's screenshots belong to: { id, name }, or null.
+  sessionOf(id) {
+    return this.feed(id)?.session || null;
   }
 
   // YouTube's word that the broadcast is over: its end time, or the owning channel's sign-in.
@@ -82,7 +96,7 @@ class AutoCapture extends EventEmitter {
       const why = !ids.has(j.id) ? 'the feed was taken off the wall'
         : this.taken(j, now) ? ''
           : now - j.createdAt >= TTL_MS ? (this.backendTakes ? 'not taken in 30 min' : 'no window with the Feed Meter took it in 30 min')
-            : !this.enabled() ? 'automatic screenshots were turned off' : '';
+            : !this.enabled(j.id) ? 'automatic screenshots were turned off' : '';
       if (why) this.note(j.id, `Automatic screenshot (${REASON[j.reason]}) dropped: ${why}`, 'warn');
       return !why;
     });
@@ -103,7 +117,7 @@ class AutoCapture extends EventEmitter {
       const over = this.over(id, v);
       if (over) {
         // An end only this server saw happen; a feed that was over when it got here isn't news.
-        if (f.liveSeen && !f.ended && this.enabled()) this.queue(id, 'end', null, now);
+        if (f.liveSeen && !f.ended && this.enabled(id)) this.queue(id, 'end', null, now);
         f.ended = f.ended || f.liveSeen;
         // A peak nobody is taking is no longer worth a screenshot of an ended stream.
         this.jobs = this.jobs.filter((j) => !(j.id === id && j.reason === 'peak' && !this.taken(j, now)));
@@ -117,7 +131,7 @@ class AutoCapture extends EventEmitter {
       // than the last screenshot's. One cut short by the cooldown is taken once the cooldown
       // is over, if the count is back at the PCV then; a PCV it has fallen from has passed.
       const pcv = rec?.peak;
-      if (pcv != null && ccv >= pcv && ccv > f.captured && now - f.capturedAt >= this.peakGapMs() && this.enabled()) {
+      if (pcv != null && ccv >= pcv && ccv > f.captured && now - f.capturedAt >= this.peakGapMs(id) && this.enabled(id)) {
         this.queue(id, 'peak', ccv, now);
         f.captured = ccv;
         f.capturedAt = now;
@@ -156,7 +170,7 @@ class AutoCapture extends EventEmitter {
   claim(job, client = '') {
     const now = this.now();
     const j = this.jobs.find((x) => x.job === job);
-    if (!j || !this.enabled() || this.taken(j, now) || now < j.holdUntil) return null;
+    if (!j || !this.enabled(j.id) || this.taken(j, now) || now < j.holdUntil) return null;
     if (this.backendTakes && client !== BACKEND) return null; // an older page still offering to help
     j.claimedAt = now;
     j.client = client;

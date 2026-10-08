@@ -41,7 +41,10 @@ class GoogleCredentials extends EventEmitter {
     const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(hostname);
     this.localUrl = protocol === 'https:' || loopback ? null : `http://localhost:${port}`;
     this.redirectUri = `${this.localUrl || publicUrl}/api/youtube/oauth/callback`;
-    this.pending = new Map();        // sign-in state -> expiry
+    this.pending = new Map();        // sign-in state -> { exp, purpose }
+    // Other sign-ins with the same client, by purpose: { scope, finish(tokens) -> name }.
+    // The server registers 'drive' (gdrive.js); 'channel' is the one here.
+    this.purposes = {};
     this.access = new Map();         // channel id -> { token, expiresAt }
     this.clientCheck = null;         // what Google said about the OAuth client: { status, message, at }
   }
@@ -232,12 +235,12 @@ class GoogleCredentials extends EventEmitter {
     }));
   }
 
-  authUrlFor(client, state) {
+  authUrlFor(client, state, scope = SCOPE) {
     return `${GOOGLE.AUTH_URL}?${new URLSearchParams({
       client_id: client.clientId,
       redirect_uri: this.redirectUri,
       response_type: 'code',
-      scope: SCOPE,
+      scope,
       access_type: 'offline',  // a refresh token, so the wall stays signed in
       prompt: 'consent',       // Google only returns a refresh token on consent
       include_granted_scopes: 'true',
@@ -245,26 +248,30 @@ class GoogleCredentials extends EventEmitter {
     })}`;
   }
 
-  // Where the sign-in popup goes. Each sign-in adds a channel (or renews one).
-  authUrl() {
+  // Where the sign-in popup goes. For 'channel' each sign-in adds a channel (or renews one);
+  // another purpose (e.g. 'drive') asks for that purpose's scope and is finished by it.
+  authUrl(purpose = 'channel') {
     const client = this.oauthClient();
     if (!client) throw new Error('Add a Google OAuth client first (Settings → YouTube API → Channel sign-in).');
+    if (purpose !== 'channel' && !this.purposes[purpose]) throw new Error(`Unknown sign-in purpose: ${purpose}`);
     const now = Date.now();
-    for (const [s, exp] of this.pending) if (exp < now) this.pending.delete(s);
+    for (const [s, p] of this.pending) if (p.exp < now) this.pending.delete(s);
     const state = crypto.randomBytes(24).toString('base64url');
-    this.pending.set(state, now + STATE_TTL_MS);
-    return this.authUrlFor(client, state);
+    this.pending.set(state, { exp: now + STATE_TTL_MS, purpose });
+    return this.authUrlFor(client, state, purpose === 'channel' ? SCOPE : this.purposes[purpose].scope);
   }
 
-  // Google sent the browser back with ?code&state. Returns the channel title.
+  // Google sent the browser back with ?code&state. Returns { purpose, name }: the channel's
+  // title, or what the purpose's finish() says (the Drive account).
   async finish({ code, state, error }) {
-    const exp = this.pending.get(state);
+    const pending = this.pending.get(state);
     this.pending.delete(state);
-    if (!exp || exp < Date.now()) throw new Error('This sign-in link expired or was already used. Start again from Settings.');
+    if (!pending || pending.exp < Date.now()) throw new Error('This sign-in link expired or was already used. Start again from Settings.');
     if (error) throw new Error(error === 'access_denied' ? 'Sign-in was cancelled.' : `Google said: ${error}`);
     if (!code) throw new Error('Google sent no authorisation code.');
     const tokens = await this.tokenRequest({ grant_type: 'authorization_code', code, redirect_uri: this.redirectUri });
     if (!tokens.refresh_token) throw new Error('Google gave no refresh token. Remove IXG Wall from the account\'s third-party access and sign in again.');
+    if (pending.purpose !== 'channel') return { purpose: pending.purpose, name: await this.purposes[pending.purpose].finish(tokens) };
     const access = { token: tokens.access_token, expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000 };
     const res = await fetch(`${GOOGLE.API}/channels?${new URLSearchParams({ part: 'snippet', mine: 'true', fields: 'items(id,snippet(title))' })}`, {
       headers: { Authorization: `Bearer ${access.token}` },
@@ -283,7 +290,7 @@ class GoogleCredentials extends EventEmitter {
       scopes: tokens.scope || SCOPE, // what the account allowed: it can untick Analytics
     });
     this.emit('change');
-    return channel.snippet?.title || channel.id;
+    return { purpose: 'channel', name: channel.snippet?.title || channel.id };
   }
 
   // Signs one channel out, or every channel without an id, and withdraws the wall's access

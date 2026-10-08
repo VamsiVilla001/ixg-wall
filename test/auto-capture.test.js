@@ -18,8 +18,12 @@ function setup({ peaks = {}, settings = {} } = {}) {
   const ingest = { videos: {} };
   const pcv = new PcvTracker({ file: null, now: () => t });
   for (const [id, peak] of Object.entries(peaks)) pcv.observe(id, { broadcast: 'live', viewers: peak });
-  const wallStore = { wall: { settings, streams: [{ label: 'Feed A', source: { id: A } }, { label: 'Feed B', source: { id: B } }] } };
-  const ac = new AutoCapture({ youtube, pcv, ingest, wallStore, now: () => t });
+  // One live session holding both feeds; `settings` is its settings object, so tests can flip them.
+  const store = {
+    live: () => [{ id: 'sess', name: 'Test session', settings, streams: [{ label: 'Feed A', source: { id: A } }, { label: 'Feed B', source: { id: B } }] }],
+    feeds() { return this.live().flatMap((s) => s.streams.map((x) => ({ ...x, session: { id: s.id, name: s.name }, settings: s.settings }))); },
+  };
+  const ac = new AutoCapture({ youtube, pcv, ingest, store, now: () => t });
   const live = (id, viewers) => { youtube.latest[id] = { broadcast: 'live', viewers, endedAt: null }; };
   // A YouTube poll: each reading goes to the PCV tracker first, as youtube.js does.
   const step = (ms = 30000) => {
@@ -27,7 +31,7 @@ function setup({ peaks = {}, settings = {} } = {}) {
     for (const id of youtube.ids()) pcv.observe(id, youtube.latest[id], t);
     return ac.check();
   };
-  return { ac, youtube, ingest, wallStore, live, step, advance: (ms) => { t += ms; } };
+  return { ac, youtube, ingest, settings, live, step, advance: (ms) => { t += ms; } };
 }
 
 test('a new PCV queues one screenshot; the PCV recorded before and the first reading are the baseline', () => {
@@ -158,7 +162,7 @@ test('the first claim wins; an unreported claim is offered again after the lease
 });
 
 test('handed back too often, a job is dropped; turned off, nothing is offered or queued', () => {
-  const { ac, wallStore, live, step } = setup();
+  const { ac, settings, live, step } = setup();
   live(A, 100);
   step();
   live(A, 200);
@@ -169,11 +173,11 @@ test('handed back too often, a job is dropped; turned off, nothing is offered or
     ac.finish(job, { retry: true });
   }
   assert.deepEqual(ac.open(), []);
-  wallStore.wall.settings.autoCapture = false;
+  settings.autoCapture = false;
   live(A, 900);
   step(PEAK_COOLDOWN_MS);
   assert.deepEqual(ac.open(), []);
-  wallStore.wall.settings.autoCapture = true;
+  settings.autoCapture = true;
   live(A, 950);
   step();
   assert.equal(ac.open()[0].ccv, 950);

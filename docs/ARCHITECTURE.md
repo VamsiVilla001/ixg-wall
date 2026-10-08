@@ -26,7 +26,8 @@ backend/
                         session-signing key (secrets.json), never sent to pages
   google-credentials.js anyone's YouTube key and Google OAuth client, checked with Google before
                         they're saved; the channel sign-ins (any number) and their tokens
-  wall-store.js         the wall: feeds + settings (wall.json), versioned
+  session-store.js      the sessions (wall.json): each one event's wall (feeds + settings + name, its
+                        own version), any number live at once; archived ones keep their feeds
   youtube.js            YouTube Data API poller + 24 h audience history (youtube-history.json);
                         a feed's history is Studio's minutes, then the wall's readings
   youtube-studio.js     YouTube Analytics' per-minute concurrent viewers since go-live, for feeds
@@ -43,6 +44,11 @@ backend/
                         /api/capture/now is the button
   slack.js              posts each screenshot to a Slack channel as the app's bot (files.getUploadURLExternal,
                         upload, files.completeUploadExternal), one at a time, retrying what Slack can get over
+  gdrive.js             uploads each screenshot to a Google Drive folder (a Drive sign-in with the YouTube OAuth
+                        client; the session/date/feed folders found or made, multipart upload)
+  onedrive.js           uploads each screenshot to a OneDrive folder (Microsoft Graph: an app registration, the
+                        folder from its sharing link via /shares, PUT by path; upload session past 4 MB)
+  retry.js              tries a cloud call again with growing waits; a one-at-a-time queue
   extension.js          ships the Feed Meter: its fixed ID and version for the page's install
                         check, and /extension/ixg-wall-feed-meter.zip built from extension/
   youtube-ingest.js     ingest health per feed, read through the signed-in channel that owns it:
@@ -168,7 +174,7 @@ YouTube embed limits, measured on the wall laptops:
                                                      youtube (audience numbers), wall (changed)
 ```
 
-- **Every window shares one wall.** The page keeps a local copy (localStorage) for when the backend is offline, but the server's `wall.json` is authoritative. When another window saves, the server broadcasts `wall`, and other pages fetch the new wall and take it in place (`pullRemoteWall`): tiles are keyed by feed id, so added feeds start, removed ones stop, and renames, reordering, priority and settings apply while the other players play on. A session switch rebuilds the wall. Only if the fetch fails is a reload offered.
+- **A window shows one session; any number are live at once.** Each session is one event's wall (feeds, settings, name) with its own id, at `/s/<id>`; `/` goes to the live one started most recently (or a link's own session). Every call the page makes names its session (`?session=`), its event stream carries only that session's `wall` events, and a `sessions` event tells every window when the list changes. The backend polls every live session's feeds in one YouTube call per 50 videos, keeps a wall total and PCV per session, and takes screenshots into each session's own folder. An archived session keeps its feeds but is polled and screenshotted no more; only an archived one can be deleted. The page keeps a local copy per session (localStorage) for when the backend is offline, but the server's `wall.json` is authoritative. When another window saves the same session, the server broadcasts `wall` to that session's windows, which fetch the new wall and take it in place (`pullRemoteWall`): tiles are keyed by feed id, so added feeds start, removed ones stop, and renames, reordering, priority and settings apply while the other players play on. Only if the fetch fails is a reload offered.
 - **The wall checks for the Feed Meter before starting feeds.** On load it fetches `chrome-extension://<id>/manifest.json` (web-accessible, fixed ID). If that fails, the install popup holds the feeds back until the extension appears or the operator continues without it.
 - **The Feed Meter talks only to the page that asks.** The wall sends `ixg-wall-hello` into each of its player frames; the extension in that frame answers to that origin only, every 2 s, with `ixg-meter` reports. The wall accepts a report only from the tile's own frame and origin, and range-checks every field.
 - **Google credentials can belong to anyone, and nothing is built in** (`backend/google-credentials.js`). The key and the OAuth client come from Settings or the environment (`YOUTUBE_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID/_SECRET`), from any Google Cloud project. Each is checked with Google before it replaces a working one:
@@ -190,7 +196,9 @@ Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` hea
 | `GET /join#token` · `POST /api/join` | a user link: the page posts `{ link }` and gets a user session. The token is after the `#`, so it never reaches server logs |
 | `GET /api/links` · `POST /api/links` · `POST /api/links/revoke` | admins: list (with each link's address), generate `{ name, days }` (0 = until revoked), revoke `{ id }` |
 | `GET /api/config` | `{ hosted, auth, role, linkName, ytKey }`: the page adapts its UI to this |
-| `GET /api/wall` · `PUT /api/wall` | the wall `{ version, wall: { settings, streams } }` |
+| `GET /api/wall?session=` · `PUT /api/wall?session=` | one session's wall `{ version, wall: { settings, streams, session, sessions } }` (`sessions`: the list for the panel). Without `session`: a link's own session, else the default live one |
+| `GET /api/sessions` | `{ version, sessions: [{ id, name, startedAt, endedAt, live, feeds }], current }` |
+| `POST /api/sessions` · `POST /api/sessions/archive` · `…/reopen` · `…/delete` | admins: start `{ name, timeZone }` (answers `{ session: { id } }`), archive, reopen or delete `{ id }` (409 unless archived) |
 | `GET /api/telemetry` | Server-Sent Events stream (see above) |
 | `GET /api/youtube` · `GET /api/youtube/history?id=` | latest audience numbers · one feed's 24 h series (`total` for the wall) |
 | `POST /api/youtube/key` | `{ key }`: checked with YouTube, then saved; `""` removes it. Answers `{ ytKey, check }`, or 400 if Google calls it invalid |
@@ -205,7 +213,7 @@ Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` hea
 
 | File | Holds |
 |---|---|
-| `wall.json` | feeds and settings, with a version number |
+| `wall.json` | every session: its feeds, settings, name, live/archived state and version (an older one-wall file is read into this shape once) |
 | `secrets.json` | YouTube key, OAuth client, one refresh token per signed-in channel, user links, session-signing key (mode 600) |
 | `youtube-history.json` | 24 h audience history (wall totals stamped with the session, for the Feeds tab's PCV), quota used today |
 | `pcv.json` | each broadcast's current CCV, sampled PCV and its time, last update, status, and Studio's official PCV (kept 30 days after it was last seen) |

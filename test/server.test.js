@@ -38,6 +38,7 @@ async function startServer(env, { expectExit = false } = {}) {
       PORT: String(port),
       IXG_DATA_DIR: dataDir,
       IXG_YOUTUBE_API: 'http://127.0.0.1:9', // nothing listens there: YouTube is never called
+      IXG_SERVER_CAPTURE: '0', // no background Chrome, which would open real YouTube pages
       ...env.vars,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -230,11 +231,28 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
   }
   // Blocked on the server, not just hidden on the page.
   for (const [p, body] of [['/api/youtube/key', { key: '' }], ['/api/youtube/oauth/client', {}], ['/api/youtube/oauth/signout', {}], ['/api/links', { name: 'more' }],
-    ['/api/slack', { token: '', channel: '' }], ['/api/slack/test', {}], ['/api/capture/now', { id: 'aaaaaaaaaaa' }]]) {
+    ['/api/slack', { token: '', channel: '' }], ['/api/slack/test', {}], ['/api/capture/now', { id: 'aaaaaaaaaaa' }],
+    ['/api/shots', { layout: 'session' }], ['/api/gdrive', { folder: 'x' }], ['/api/onedrive/client', {}], ['/api/onedrive/test', {}]]) {
     assert.equal((await user(p, { method: 'POST', body: JSON.stringify(body) })).status, 403, p);
   }
   assert.equal((await user('/api/links')).status, 403);
-  assert.equal((await (await user('/api/config')).json()).slack, null, 'a user learns nothing about Slack');
+  assert.equal((await user('/api/shots')).status, 403);
+  const userConfig = await (await user('/api/config')).json();
+  assert.equal(userConfig.slack, null, 'a user learns nothing about Slack');
+  assert.equal(userConfig.shots, null, 'nor about the destinations');
+  // The folder choices: kept on the server, validated, shown back.
+  const adminHeaders = { Cookie: cookie, 'Content-Type': 'application/json', 'X-IXG-Wall': '1' };
+  const shotsPost = (body) => fetch(`${hosted.base}/api/shots`, { method: 'POST', headers: adminHeaders, body: JSON.stringify(body) });
+  assert.equal((await shotsPost({ layout: 'by-feed' })).status, 400);
+  assert.equal((await shotsPost({ feedNames: 'initials' })).status, 400);
+  assert.equal((await shotsPost({ folder: 'relative/path' })).status, 400);
+  const set = await (await shotsPost({ layout: 'session-feed', feedNames: 'full' })).json();
+  assert.equal(set.shots.layout, 'session-feed');
+  assert.equal(set.shots.feedNames, 'full');
+  assert.deepEqual(set.shots.layoutChoices, ['session-date-feed', 'session-feed', 'session-date', 'session']);
+  assert.equal(set.shots.gdrive.signedIn, false);
+  assert.equal(set.shots.onedrive.client.set, false);
+  assert.equal((await (await fetch(`${hosted.base}/api/config`, { headers: adminHeaders })).json()).shots.layout, 'session-feed');
   assert.equal((await user('/api/youtube/oauth/start', { redirect: 'manual' })).status, 403);
   assert.equal((await (await admin('/api/config')).json()).ytKey.last4, '9876', 'the key is still in place');
 
@@ -246,8 +264,8 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
   assert.equal(after.scrollColumns, 3);
   assert.equal(after.ytPollSec, 60);
 
-  // Users don't add feeds: refused on the server, whether on the wall or smuggled into a
-  // saved session. Reordering, removing and bringing back a saved session's feeds are fine.
+  // Users don't add feeds: refused on the server. A feed any session has (live or archived)
+  // may come back; reordering and removing are fine.
   const put = (w) => user('/api/wall', { method: 'PUT', body: JSON.stringify({ wall: w }) });
   const feed = (id, label) => ({ id: `s-${id}`, source: { kind: 'video', id }, label });
   const base = (await (await user('/api/wall')).json()).wall;
@@ -255,16 +273,24 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
   assert.equal(seeded.status, 200);
   const adminPut = await fetch(`${hosted.base}/api/wall`, {
     method: 'PUT', headers: headers({ 'X-IXG-Wall': '1', 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ wall: { ...base, streams: [feed('aaaaaaaaaaa', 'A'), feed('bbbbbbbbbbb', 'B')], savedSessions: [{ id: 'old', name: 'Earlier', startedAt: '2026-10-04T09:00:00.000Z', endedAt: '2026-10-04T10:00:00.000Z', streams: [feed('ccccccccccc', 'C')] }] } }),
+    body: JSON.stringify({ wall: { ...base, streams: [feed('aaaaaaaaaaa', 'A'), feed('bbbbbbbbbbb', 'B')] } }),
   });
-  assert.equal(adminPut.status, 200, 'the admin seeds two feeds and a saved session');
+  assert.equal(adminPut.status, 200, 'the admin seeds two feeds');
+  // ...and an archived session holding a third.
+  const earlier = (await (await admin('/api/sessions', { name: 'Earlier' })).json()).session;
+  const earlierPut = await fetch(`${hosted.base}/api/wall?session=${earlier.id}`, {
+    method: 'PUT', headers: headers({ 'X-IXG-Wall': '1', 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ wall: { settings: {}, session: { name: 'Earlier' }, streams: [feed('ccccccccccc', 'C')] } }),
+  });
+  assert.equal(earlierPut.status, 200);
+  assert.equal((await admin('/api/sessions/archive', { id: earlier.id })).status, 200);
+  assert.equal((await user('/api/sessions', { method: 'POST', body: JSON.stringify({ name: 'Mine' }) })).status, 403, 'users don\'t start sessions');
   const current = (await (await user('/api/wall')).json()).wall;
+  assert.deepEqual(current.streams.map((s) => s.label), ['A', 'B'], 'the seeded live session is the default again');
   const added = await put({ ...current, streams: [...current.streams, feed('ddddddddddd', 'D')] });
   assert.equal(added.status, 403);
   assert.match((await added.json()).error, /admin can add feeds/);
-  const smuggled = await put({ ...current, savedSessions: [...current.savedSessions, { ...current.savedSessions[0], id: 'new', streams: [feed('eeeeeeeeeee', 'E')] }] });
-  assert.equal(smuggled.status, 403);
-  assert.equal((await put({ ...current, streams: [feed('ccccccccccc', 'C'), current.streams[1], current.streams[0]] })).status, 200, 'a saved session\'s feed comes back, and feeds reorder');
+  assert.equal((await put({ ...current, streams: [feed('ccccccccccc', 'C'), current.streams[1], current.streams[0]] })).status, 200, 'an archived session\'s feed comes back, and feeds reorder');
   assert.deepEqual((await (await user('/api/wall')).json()).wall.streams.map((s) => s.label), ['C', 'B', 'A']);
   assert.equal((await put({ ...current, streams: [current.streams[1]] })).status, 200, 'removing feeds');
   // A feed a user removed is gone for them: bringing it back is adding it, the admin's job.
@@ -331,6 +357,33 @@ test('repeated wrong passwords are locked out for a while', async () => {
   for (let i = 0; i < 11; i++) codes.push((await attempt()).status);
   assert.deepEqual(codes.slice(0, 10), Array(10).fill(401));
   assert.equal(codes[10], 429);
+});
+
+test('a link made for one session opens that session and sees nothing of another', async () => {
+  const admin = (p, body) => fetch(`${hosted.base}${p}`, body === undefined ? { headers: headers() }
+    : { method: 'POST', headers: headers({ 'X-IXG-Wall': '1' }), body: JSON.stringify(body) });
+  const join = (body) => fetch(`${hosted.base}/api/join`, { method: 'POST', headers: { 'X-IXG-Wall': '1' }, body: JSON.stringify(body) });
+  const a = (await (await admin('/api/wall')).json()).wall.session;
+  const other = (await (await admin('/api/sessions', { name: 'Other event' })).json()).session;
+  const made = await admin('/api/links', { name: 'Review of A', session: a.id });
+  assert.equal(made.status, 200);
+  const l = (await made.json()).links.find((x) => x.name === 'Review of A');
+  assert.equal(l.session, a.id);
+  assert.equal(l.sessionName, a.name);
+  assert.equal((await admin('/api/links', { name: 'x', session: 'nope' })).status, 400, 'a session that doesn\'t exist');
+  const joined = await join({ link: l.url });
+  assert.equal(joined.status, 200);
+  assert.equal((await joined.json()).next, `/s/${a.id}`, 'the sign-in page is told where to go');
+  const c = joined.headers.get('set-cookie').split(';')[0];
+  const as = (p) => fetch(`${hosted.base}${p}`, { headers: { Cookie: c }, redirect: 'manual' });
+  assert.equal((await as('/')).headers.get('location'), `/s/${a.id}`);
+  assert.equal((await as(`/s/${other.id}`)).headers.get('location'), `/s/${a.id}`, 'another session\'s address goes back to its own');
+  assert.equal((await as(`/api/wall?session=${other.id}`)).status, 403);
+  assert.equal((await as(`/api/youtube?session=${other.id}`)).status, 403);
+  assert.equal((await (await as('/api/wall')).json()).wall.session.id, a.id, 'with no session named: its own, not the default');
+  assert.equal((await as(`/api/wall?session=${a.id}`)).status, 200);
+  assert.equal((await admin('/api/links/revoke', { id: l.id })).status, 200);
+  assert.equal((await admin('/api/sessions/archive', { id: other.id })).status, 200);
 });
 
 test('two walls on one computer keep separate sessions: the cookie is named per port', async () => {

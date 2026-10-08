@@ -66,5 +66,11 @@ module.exports = {
     token: (process.env.SLACK_BOT_TOKEN || '').trim(),
     channelId: (process.env.SLACK_CHANNEL_ID || '').trim(),
   },
+  // Optional: the Microsoft app (Azure app registration) the OneDrive sign-in uses, instead
+  // of entering it in Settings. Its Web redirect URI must be PUBLIC_URL + /api/onedrive/callback.
+  MS_CLIENT: {
+    clientId: (process.env.MS_CLIENT_ID || '').trim(),
+    clientSecret: (process.env.MS_CLIENT_SECRET || '').trim(),
+  },
   problems,
 };

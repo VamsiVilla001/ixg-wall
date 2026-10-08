@@ -144,7 +144,7 @@ async function startWall({ secrets } = {}) {
     cwd: ROOT,
     env: {
       PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, PORT: String(port), IXG_DATA_DIR: dataDir,
-      IXG_YOUTUBE_API: `${g}/api`, IXG_YOUTUBE_ANALYTICS_API: `${g}/analytics`, IXG_GOOGLE_TOKEN_URL: `${g}/token`, IXG_GOOGLE_REVOKE_URL: `${g}/revoke`, IXG_GOOGLE_AUTH_URL: `${g}/auth`,
+      IXG_SERVER_CAPTURE: '0', IXG_YOUTUBE_API: `${g}/api`, IXG_YOUTUBE_ANALYTICS_API: `${g}/analytics`, IXG_GOOGLE_TOKEN_URL: `${g}/token`, IXG_GOOGLE_REVOKE_URL: `${g}/revoke`, IXG_GOOGLE_AUTH_URL: `${g}/auth`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -140,16 +140,22 @@ test('the poller: failures back off and reset nothing; the PCV carries on when Y
   await ready;
   const { YouTubeStats } = require('../backend/youtube');
   const pcv = new PcvTracker({ file: path.join(dataDir, 'poller-pcv.json') });
-  const wallStore = { wall: { settings: { ytPollSec: 30 }, streams: [{ source: { id: ID } }] } };
+  // One live session with the feed; its id can change to stand for a switch of session.
+  const current = { id: 's1', name: 'Test', settings: { ytPollSec: 30 }, streams: [{ source: { kind: 'video', id: ID } }] };
+  const store = {
+    live: () => [current],
+    get: (id) => (id === current.id ? current : null),
+    feeds: () => current.streams.map((x) => ({ ...x, session: { id: current.id, name: current.name }, settings: current.settings })),
+  };
   const credentials = { apiKey: () => 'AIzaTEST', keyInfo: () => ({ set: true }), referer: 'http://localhost/' };
-  const yt = new YouTubeStats({ wallStore, credentials, pcv });
+  const yt = new YouTubeStats({ store, credentials, pcv });
   const video = (n) => ({ body: { items: [{ id: ID, snippet: { liveBroadcastContent: 'live', channelId: 'UCx' }, statistics: {}, liveStreamingDetails: { concurrentViewers: n == null ? undefined : String(n), actualStartTime: '2026-10-08T05:31:37Z' } }] } });
   const poll = async () => { await yt.poll(); clearTimeout(yt.timer); };
   try {
     fake.answers.push(video(1500), { body: { items: [] } }); // the video, then the channel's subscribers
     await poll();
     assert.equal(pcv.get(ID).peak, 1500);
-    assert.equal(yt.state().videos[ID].pcv.peak, 1500, 'pages see it');
+    assert.equal(yt.state(current.id).videos[ID].pcv.peak, 1500, 'pages see it');
 
     fake.answers.push({ drop: true });
     await poll();
@@ -159,7 +165,7 @@ test('the poller: failures back off and reset nothing; the PCV carries on when Y
     await poll();
     assert.equal(yt.backoffMs(), 120000, 'then 4×');
     assert.equal(pcv.get(ID).peak, 1500, 'nothing reset by the failures');
-    assert.ok(yt.state().retryAt > Date.now(), 'the page can say when it tries again');
+    assert.ok(yt.state(current.id).retryAt > Date.now(), 'the page can say when it tries again');
 
     fake.answers.push({ status: 403, body: { error: { message: 'quota', errors: [{ reason: 'quotaExceeded' }] } } });
     await poll();
@@ -175,13 +181,18 @@ test('the poller: failures back off and reset nothing; the PCV carries on when Y
     assert.equal(pcv.get(ID).peak, 1800);
 
     // The wall's own PCV (the Feeds tab): the highest wall total read in this session.
-    assert.equal(yt.state().total.pcv, 1800);
-    assert.equal(yt.state().total.pcvSamples, 2, 'the hidden count was no reading');
-    wallStore.wall.session = { id: 'another-event', name: 'Another event' };
-    assert.equal(yt.state().total.pcv, null, 'a new session starts its wall PCV afresh');
+    assert.equal(yt.state(current.id).total.pcv, 1800);
+    assert.equal(yt.state(current.id).total.pcvSamples, 2, 'the hidden count was no reading');
+    current.id = 'another-event';
+    assert.equal(yt.state(current.id).total.pcv, null, 'a new session starts its wall PCV afresh');
     fake.answers.push(video(700));
     await poll();
-    assert.equal(yt.state().total.pcv, 700);
+    assert.equal(yt.state(current.id).total.pcv, 700);
+    // Totals from before they were stamped with a session belong to the one live session.
+    yt.totals.unshift([Date.now() - 60000, 5000, null]);
+    assert.equal(yt.state(current.id).total.pcv, 700, 'unstamped: not counted as such');
+    yt.adoptUnstamped(current.id);
+    assert.equal(yt.state(current.id).total.pcv, 5000, 'adopted into the session');
     assert.equal(pcv.get(ID).peak, 1800, 'the broadcast\'s own PCV is untouched by the session change');
   } finally {
     yt.stop();

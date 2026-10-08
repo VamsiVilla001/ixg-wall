@@ -156,14 +156,24 @@ test('screenshot names start with the language, from the feed\'s tag or a langua
   assert.equal(languageOf('Someone else', 'No language here'), 'Untagged');
 });
 
-test('each session\'s screenshots go in a folder named after it, safe on Windows', () => {
-  const { sessionFolder, SourceCapture } = require('../backend/source-capture');
+test('screenshots go in Screenshots/<session>/<day>/<feed>/, the names as typed, safe on Windows', () => {
+  const { sessionFolder, feedFolder, dayFolder, shotFolder, SourceCapture } = require('../backend/source-capture');
+  assert.equal(dayFolder(new Date(2026, 9, 8, 23, 59)), '2026-10-08', 'the local day');
+  assert.equal(shotFolder('BMSD 2026: Day 1', '[HINDI] Main | Day 1', '', new Date(2026, 9, 8, 16, 42)), path.join('BMSD 2026 Day 1', '2026-10-08', 'Hindi Day 1'));
   assert.equal(sessionFolder('BMSD 2026: Semi-Finals / Day 1'), 'BMSD 2026 Semi-Finals Day 1');
   assert.equal(sessionFolder(''), 'Untitled session');
   assert.equal(sessionFolder(undefined), 'Untitled session');
+  const hindi = '[HINDI] BMSD 2026 | Semi-Finals | Day 1 #BGMILIVE';
+  assert.equal(feedFolder(hindi), 'Hindi Day 1', 'short: the tag and the day');
+  assert.equal(feedFolder('[MAP STREAM]  BMSD 2026 | Semi-Finals | Day 1 #BGMILIVE'), 'Map Stream Day 1');
+  assert.equal(feedFolder('[ENGLISH] Grand Finals'), 'English', 'no day in the label');
+  assert.equal(feedFolder('Someone else\'s stream'), 'Someone else\'s stream', 'no tag: the label as typed');
+  assert.equal(feedFolder(hindi, '', [hindi, '[HINDI] Backup | Day 1']), hindi.replace(/ \| /g, ' '), 'two Hindi Day 1 feeds in a session: the whole labels keep them apart');
+  assert.equal(feedFolder(hindi, '', [hindi, '[ENGLISH] Main | Day 1']), 'Hindi Day 1', 'a different language is no clash');
+  assert.equal(feedFolder('', 'Pqmg2dcht_M'), 'Pqmg2dcht_M', 'an unlabelled feed: its video id');
   const sc = new SourceCapture({ browserPath: null, folder: path.join(dir, 'shots') });
-  const file = sc.save(Buffer.from('png'), '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png', sessionFolder('BMSD 2026: Day 1'));
-  assert.equal(path.relative(path.join(dir, 'shots'), file), path.join('BMSD 2026 Day 1', '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png'));
-  const again = sc.save(Buffer.from('png'), '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png', sessionFolder('BMSD 2026: Day 1'));
+  const file = sc.save(Buffer.from('png'), '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png', shotFolder('BMSD 2026: Day 1', '[HINDI] Main | Day 1'));
+  assert.equal(path.relative(path.join(dir, 'shots'), file), path.join('BMSD 2026 Day 1', dayFolder(), 'Hindi Day 1', '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png'));
+  const again = sc.save(Buffer.from('png'), '[Hindi] - x - 1 CCV - 2026-10-08 15-52.png', shotFolder('BMSD 2026: Day 1', '[HINDI] Main | Day 1'));
   assert.match(path.basename(again), / \(1\)\.png$/, 'a second file of the same name is kept, not overwritten');
 });

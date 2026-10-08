@@ -43,8 +43,8 @@ function ingest(videoIds) {
     dropAccess() {},
     clientInfo: () => ({ set: true }),
   };
-  const wallStore = { wall: { streams: videoIds.map((id) => ({ source: { kind: 'video', id } })) } };
-  const ing = new IngestHealth({ credentials, wallStore, pollMs: () => 30000 });
+  const store = { live: () => [], feeds: () => videoIds.map((id) => ({ source: { kind: 'video', id }, session: { id: 's', name: 'Test' }, settings: {} })) };
+  const ing = new IngestHealth({ credentials, store, pollMs: () => 30000 });
   ing.stop(); // polls are called by hand
   return ing;
 }

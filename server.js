@@ -16,13 +16,15 @@ const { IngestHealth } = require('./backend/youtube-ingest');
 const feedMeter = require('./backend/extension');
 const { Telemetry } = require('./backend/telemetry');
 const { WallBrowser, DECODE_MODES, PROFILE_DIR, findBrowser } = require('./backend/wall-browser');
-const { WallStore } = require('./backend/wall-store');
+const { SessionStore, SESSION_ID } = require('./backend/session-store');
 const { YouTubeStats } = require('./backend/youtube');
 const { StudioAudience } = require('./backend/youtube-studio');
 const { PcvTracker } = require('./backend/pcv');
 const { AutoCapture, BACKEND } = require('./backend/auto-capture');
-const { SourceCapture, readableName, sessionFolder } = require('./backend/source-capture');
+const { SourceCapture, readableName, shotFolder, LAYOUTS, FEED_NAMES } = require('./backend/source-capture');
 const { SlackPoster } = require('./backend/slack');
+const { GoogleDrive } = require('./backend/gdrive');
+const { OneDrive } = require('./backend/onedrive');
 const { readAsset } = require('./backend/assets');
 
 const { PORT, HOST, HOSTED, PUBLIC_URL } = config;
@@ -52,15 +54,11 @@ const PUBLIC_PATHS = new Set(['/login', '/join', '/style.css', '/ixg-tokens.css'
 // interval spends the admin's YouTube quota; the rest are the wall computer's own.
 const ADMIN_SETTINGS = ['ytPollSec', 'memLimitMB', 'offloadEveryMin', 'autoCapture', 'autoCaptureMin'];
 
-// Whether a wall a user wants to save holds any feed the admin never put there.
+// Whether a wall a user wants to save holds any feed no session has (live or archived):
+// users don't add feeds, an admin does.
 function addsFeeds(wall) {
-  const sources = (streams) => (Array.isArray(streams) ? streams : []).map((s) => s?.source?.id);
-  const known = new Set([
-    ...sources(wallStore.wall?.streams),
-    ...(wallStore.wall?.savedSessions || []).flatMap((s) => sources(s.streams)),
-  ]);
-  const wanted = [...sources(wall.streams), ...(Array.isArray(wall.savedSessions) ? wall.savedSessions : []).flatMap((s) => sources(s?.streams))];
-  return wanted.some((id) => !known.has(id));
+  const known = new Set(sessions.sessions.flatMap((s) => s.streams.map((x) => x.source?.id)));
+  return (Array.isArray(wall.streams) ? wall.streams : []).some((x) => !known.has(x?.source?.id));
 }
 const isPublic = (p) => PUBLIC_PATHS.has(p) || p.startsWith('/fonts/');
 const SECURITY_HEADERS = {
@@ -71,9 +69,11 @@ const SECURITY_HEADERS = {
   'Content-Security-Policy': "frame-ancestors 'none'",
 };
 
-const wallStore = new WallStore();
-const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: config.GOOGLE_OAUTH_CLIENT, envSlack: config.SLACK });
-// Where screenshots are posted: anyone's Slack app, checked with Slack before it's saved.
+// Every session (one event's wall each); any number live at once (backend/session-store.js).
+const sessions = new SessionStore();
+const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: config.GOOGLE_OAUTH_CLIENT, envSlack: config.SLACK, envMsClient: config.MS_CLIENT });
+// Where screenshots go besides the disk: anyone's Slack app, a Google Drive folder, a
+// OneDrive folder; each checked with its service before it's saved.
 const slack = new SlackPoster({ secrets });
 const userLinks = new UserLinks(secrets);
 const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, port: new URL(PUBLIC_URL).port, linkActive: (id) => userLinks.active(id) });
@@ -81,21 +81,47 @@ const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED, wallProfile:
 const wallBrowser = HOSTED ? null : new WallBrowser({ url: `http://localhost:${PORT}/` });
 // Anyone's YouTube key and Google OAuth client, checked with Google before they're saved.
 const credentials = new GoogleCredentials({ secrets, publicUrl: PUBLIC_URL, port: PORT });
+const gdrive = new GoogleDrive({ secrets, credentials });
+credentials.purposes.drive = { scope: GoogleDrive.SCOPE, finish: (tokens) => gdrive.finish(tokens) }; // the Drive sign-in, same client
+const onedrive = new OneDrive({ secrets, publicUrl: PUBLIC_URL });
 // Each broadcast's peak concurrent viewers: sampled at every poll, Studio's kept apart (pcv.json).
 const pcv = new PcvTracker();
-const youtube = new YouTubeStats({ wallStore, credentials, pcv });
-const ingest = new IngestHealth({ credentials, wallStore, pollMs: () => youtube.pollMs() });
+const youtube = new YouTubeStats({ store: sessions, credentials, pcv });
+// Wall totals from before sessions stamped them: the one live session's, so its PCV keeps them.
+if (sessions.live().length === 1) youtube.adoptUnstamped(sessions.live()[0].id);
+const ingest = new IngestHealth({ credentials, store: sessions, pollMs: () => youtube.pollMs() });
 youtube.ingest = ingest; // its state rides along with the YouTube numbers
 // YouTube Studio's per-minute audience and PCV for feeds a signed-in channel owns.
 const studio = new StudioAudience({ credentials, ingest, pcv });
 youtube.studio = studio;
 ingest.studio = studio;
 // Automatic source screenshots at each new PCV and at a stream's end: decided here.
-const autoCapture = new AutoCapture({ youtube, pcv, ingest, wallStore });
+const autoCapture = new AutoCapture({ youtube, pcv, ingest, store: sessions });
 // The backend takes them itself, in a headless browser: no window pops up and focus never
 // moves (backend/source-capture.js). On a server that needs Chrome installed (DEPLOY.md);
 // without one, admins' pages with the Feed Meter take them instead.
 const sourceCapture = process.env.IXG_SERVER_CAPTURE === '0' ? null : new SourceCapture({ browserPath: findBrowser(), hosted: HOSTED });
+
+// Settings → Source screenshots → Folders: the base folder, when the admin chose one.
+function applyShotFolder() {
+  if (sourceCapture) sourceCapture.folder = secrets.shots().folder || process.env.IXG_SCREENSHOT_DIR || sourceCapture.defaultFolder;
+}
+applyShotFolder();
+
+// What Settings shows of where screenshots go: the folder choices and each destination's
+// state, never a token or secret.
+function shotsInfo() {
+  return {
+    ...secrets.shots(),
+    layoutChoices: LAYOUTS,
+    feedNameChoices: FEED_NAMES,
+    defaultFolder: sourceCapture?.defaultFolder || null,
+    folderInUse: sourceCapture?.folder || null,
+    slack: slack.info(),
+    gdrive: gdrive.info(),
+    onedrive: onedrive.info(),
+  };
+}
 autoCapture.backendTakes = !!sourceCapture?.available();
 const sseClients = new Map(); // response -> { role, linkId } of whoever opened it
 const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: false, hosted: true });
@@ -104,8 +130,8 @@ const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: f
 // but nothing about the key, the OAuth client or which channels signed in, and no Google
 // error text (it can name the key's restrictions or the client).
 // A link made without YouTube gets the state of a wall with no key at all.
-function youtubeFor(role, link = null) {
-  const s = youtube.state();
+function youtubeFor(role, link = null, sessionId = null) {
+  const s = youtube.state(sessionId);
   if (role === 'admin') return { ...s, captures: autoCapture.open(), captureLog: autoCapture.entries(), captureLogBoot: autoCapture.boot };
   if (link && link.youtube === false) {
     return { status: 'off', error: '', key: { set: false }, ingest: null, updatedAt: 0, pollMs: s.pollMs, units: { used: 0, limit: 0 }, total: { now: null }, videos: {} };
@@ -128,33 +154,54 @@ function youtubeFor(role, link = null) {
 }
 
 // Walls saved before the key moved to secrets.json kept it in wall.json: move it out, once.
-// Walls from before sessions get their feeds put in a saved session (see wall-store.js).
-if (wallStore.legacyKey && !secrets.ytKeyInfo().set) secrets.setYtApiKey(wallStore.legacyKey);
-if (wallStore.legacyKey || wallStore.migrated) {
+// A wall from before several sessions could be live is read into the new shape once.
+if (sessions.legacyKey && !secrets.ytKeyInfo().set) secrets.setYtApiKey(sessions.legacyKey);
+if (sessions.legacyKey || sessions.migrated) {
   try {
-    wallStore.save(wallStore.wall);
-    if (wallStore.legacyKey) console.log('Moved the YouTube API key from wall.json to secrets.json.');
-    if (wallStore.migrated) console.log('Saved the earlier feeds as the session "Before sessions"; the wall starts a new, empty session.');
+    sessions.write();
+    if (sessions.legacyKey) console.log('Moved the YouTube API key from wall.json to secrets.json.');
+    if (sessions.migrated) console.log(`Read the earlier wall into sessions: ${sessions.list().map((x) => `${x.name}${x.live ? ' (live)' : ''}`).join(', ') || 'none'}.`);
   } catch (err) {
     console.error(`Could not rewrite wall.json: ${err.message}`);
   }
 }
 
-function broadcast(event, data) {
+// To every window, or with `sessionId` only to the windows showing that session.
+function broadcast(event, data, sessionId = null) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const res of sseClients.keys()) res.write(msg);
+  for (const [res, c] of sseClients) if (!sessionId || c.sessionId === sessionId) res.write(msg);
 }
 
-// The YouTube state goes out in three cuts: the admin's, the users', and nothing for
-// links made without YouTube.
+// The YouTube state goes out per session, in three cuts: the admin's, the users', and
+// nothing for links made without YouTube.
 function broadcastYoutube() {
   const msgs = {};
-  for (const [res, { role, linkId }] of sseClients) {
+  for (const [res, { role, linkId, sessionId }] of sseClients) {
     const link = linkId ? userLinks.get(linkId) : null;
-    const cut = role === 'admin' ? 'admin' : link?.youtube === false ? 'none' : 'user';
-    msgs[cut] ??= `event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link))}\n\n`;
+    const cut = `${role === 'admin' ? 'admin' : link?.youtube === false ? 'none' : 'user'}|${sessionId}`;
+    msgs[cut] ??= `event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link, sessionId))}\n\n`;
     res.write(msgs[cut]);
   }
+}
+
+// The list of sessions changed, or one went live or archived: every window's panel, and the
+// pollers (a session going live brings its feeds in; archived, takes them out).
+function sessionsChanged() {
+  broadcast('sessions', { version: sessions.version, sessions: sessions.list() });
+  youtube.wallChanged();
+  ingest.wallChanged();
+  preloadShots();
+}
+
+// The live sessions' feeds keep their YouTube pages open in the background browser, so a
+// screenshot is a second's work when a peak asks for it (backend/source-capture.js).
+function preloadShots() {
+  sourceCapture?.preload(sessions.feeds().map((f) => f.source?.id).filter(Boolean));
+}
+
+// The admin's list of links, each named with its session.
+function linkList() {
+  return userLinks.list(PUBLIC_URL).map((l) => ({ ...l, sessionName: l.session ? sessions.get(l.session)?.name || '(deleted session)' : null }));
 }
 
 youtube.on('update', () => {
@@ -179,7 +226,7 @@ function shotDetail({ file, facts = {} }) {
 
 // The message a screenshot goes to Slack with. A new PCV says it's the wall's sampled figure;
 // at the end, Studio's official PCV comes first when the channel's sign-in has it.
-function slackComment(kind, id, shot, name, shotPcv) {
+function slackComment(kind, id, shot, name, shotPcv, sessionName = '') {
   const n = (v) => Number(v).toLocaleString('en-US');
   const at = (ms) => new Date(ms).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   const r = pcv.get(id);
@@ -196,20 +243,37 @@ function slackComment(kind, id, shot, name, shotPcv) {
   } else {
     lines.push(`Screenshot taken on request: YouTube's page showed ${page}.`);
   }
-  lines.push(`${f.account || ''} · https://youtu.be/${id}`.replace(/^ · /, ''));
+  lines.push(`${sessionName ? `${sessionName} · ` : ''}${f.account || ''} · https://youtu.be/${id}`.replace(/^ · /, ''));
   return lines.join('\n');
 }
 
 // Each screenshot goes to Slack once it's saved, when Slack is set up; the record says how it went.
-function toSlack(kind, id, shot, shotPcv = null) {
+function toSlack(kind, id, shot, shotPcv = null, sessionName = '') {
   if (!slack.configured()) return;
   const name = path.basename(shot.file);
   autoCapture.note(id, `Screenshot posting to Slack: ${name}`, 'info', BACKEND);
   broadcastYoutube();
-  slack.post({ file: shot.file, title: name.replace(/\.png$/, ''), comment: slackComment(kind, id, shot, name, shotPcv) }).then((r) => {
+  slack.post({ file: shot.file, title: name.replace(/\.png$/, ''), comment: slackComment(kind, id, shot, name, shotPcv, sessionName) }).then((r) => {
     autoCapture.note(id, r.ok ? `Screenshot posted to Slack: ${name}` : `Screenshot not posted to Slack: ${r.error}`, r.ok ? 'info' : 'bad', BACKEND);
     broadcastYoutube();
   });
+}
+
+// Every destination that's set up gets the screenshot: Slack as a post, Google Drive and
+// OneDrive as uploads under the same session/date/feed folders. The record says how each went.
+function deliver(kind, id, shot, shotPcv = null, sessionName = '') {
+  toSlack(kind, id, shot, shotPcv, sessionName);
+  const relPath = path.relative(sourceCapture.folder, shot.file);
+  const name = path.basename(shot.file);
+  for (const [label, dest] of [['Google Drive', gdrive], ['OneDrive', onedrive]]) {
+    if (!dest.configured()) continue;
+    autoCapture.note(id, `Screenshot uploading to ${label}: ${name}`, 'info', BACKEND);
+    dest.post({ file: shot.file, relPath }).then((r) => {
+      autoCapture.note(id, r.ok ? `Screenshot uploaded to ${label}: ${relPath.replace(/\\/g, '/')}` : `Screenshot not uploaded to ${label}: ${r.error}`, r.ok ? 'info' : 'bad', BACKEND);
+      broadcastYoutube();
+    });
+  }
+  broadcastYoutube();
 }
 
 // Automatic screenshots, taken by the backend one at a time. A browser or network hiccup is
@@ -225,10 +289,13 @@ async function takeAutoCaptures() {
   backendShooting = true;
   let pause = 0;
   try {
+    const sessionName = autoCapture.sessionOf(job.id)?.name || '';
     const name = (facts) => readableName({ label: autoCapture.label(job.id), facts, kind: job.reason, pcv: job.ccv });
-    const shot = await sourceCapture.capture({ videoId: job.id, name, subfolder: sessionFolder(wallStore.wall?.session?.name) });
-    autoCapture.finish(job.job, { outcome: 'saved', detail: `${shotDetail(shot)}${shot.note ? ` · ${shot.note}` : ''}`, client: BACKEND });
-    toSlack(job.reason, job.id, shot, job.ccv);
+    const siblings = (sessions.get(autoCapture.sessionOf(job.id)?.id)?.streams || []).map((x) => x.label);
+    const shot = await sourceCapture.capture({ videoId: job.id, name, subfolder: shotFolder(sessionName, autoCapture.label(job.id), job.id, new Date(), siblings, secrets.shots()) });
+    const how = `${shot.kept ? 'page kept open' : 'page opened for it'}, ${(shot.tookMs / 1000).toFixed(1)} s`;
+    autoCapture.finish(job.job, { outcome: 'saved', detail: `${shotDetail(shot)}${shot.note ? ` · ${shot.note}` : ''} · ${how}`, client: BACKEND });
+    deliver(job.reason, job.id, shot, job.ccv, sessionName);
   } catch (err) {
     const retry = SHOT_RETRY.has(err.reason);
     if (retry) pause = SHOT_RETRY_PAUSE_MS;
@@ -312,7 +379,7 @@ async function join(req, res) {
   auth.succeeded(addr);
   userLinks.used(link);
   const until = link.expiresAt ? Date.parse(link.expiresAt) : Infinity;
-  sendJson(res, 200, { ok: true, role: 'user' }, { 'Set-Cookie': auth.sessionCookie('user', link.id, until) });
+  sendJson(res, 200, { ok: true, role: 'user', next: link.session ? `/s/${link.session}` : '/' }, { 'Set-Cookie': auth.sessionCookie('user', link.id, until) });
 }
 
 const adminOnly = (res) => sendJson(res, 403, { error: 'Only an admin can do this. Sign in with the wall password.' });
@@ -329,13 +396,23 @@ async function handleApi(req, res, urlPath, session) {
   // Integrations and the wall computer: an admin's alone. Checked here, so a user can't
   // reach them by calling the API directly, whatever their page shows.
   if (!admin && (urlPath.startsWith('/api/youtube/key') || urlPath.startsWith('/api/youtube/oauth/')
-    || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser' || urlPath.startsWith('/api/slack'))) {
+    || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser' || urlPath.startsWith('/api/slack')
+    || urlPath.startsWith('/api/shots') || urlPath.startsWith('/api/gdrive') || urlPath.startsWith('/api/onedrive'))) {
     return adminOnly(res);
   }
   // A link made without YouTube gets none of its data, the audience history included.
   if (!admin && link?.youtube === false && urlPath === '/api/youtube/history') {
     return sendJson(res, 403, { error: 'This link was made without YouTube data.' });
   }
+  // Which session the request is about (?session=<id>): a link made for one session can
+  // only ask about that one; with none named, the link's, else the default live one.
+  const query = new URL(req.url, 'http://localhost').searchParams;
+  let sessionId = query.get('session') || '';
+  if (sessionId && !SESSION_ID.test(sessionId)) sessionId = '';
+  const scope = link?.session || null;
+  if (scope && sessionId && sessionId !== scope) return sendJson(res, 403, { error: 'This link is for another session.' });
+  if (!sessionId) sessionId = scope || sessions.default().id;
+  const current = sessions.get(sessionId);
   // What this server is: the page adapts (no laptop readouts when hosted, a Sign out button,
   // and for a user, no integrations).
   if (urlPath === '/api/config' && req.method === 'GET') {
@@ -346,10 +423,15 @@ async function handleApi(req, res, urlPath, session) {
       linkName: link?.name || null,
       ytKey: admin ? credentials.keyInfo() : { set: credentials.keyInfo().set && link?.youtube !== false },
       linkYoutube: admin ? null : link?.youtube !== false, // false: the admin made this link without YouTube data
+      // The session this window is on, and the one its link is for (users of such a link see it alone).
+      session: current ? { id: current.id, name: current.name, live: current.live } : null,
+      linkSession: scope,
       // Source screenshots are taken by this backend, in the background, not by the page's Feed Meter.
       backendCapture: admin && autoCapture.backendTakes,
       // Where they're posted: never the token itself.
       slack: admin ? slack.info() : null,
+      // Where they go: folders and every destination (admin).
+      shots: admin ? shotsInfo() : null,
       // The Feed Meter extension: what the page checks for, and where to get it.
       extension: feedMeter.info({ extraIds: config.EXTENSION_IDS, storeUrl: config.EXTENSION_STORE_URL }),
     });
@@ -358,20 +440,56 @@ async function handleApi(req, res, urlPath, session) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     res.write('retry: 3000\n\n');
     if (telemetry.latest) res.write(`data: ${JSON.stringify({ ...telemetry.latest, browser: browserStatus() })}\n\n`);
-    res.write(`event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link))}\n\n`);
-    sseClients.set(res, session);
+    res.write(`event: youtube\ndata: ${JSON.stringify(youtubeFor(role, link, sessionId))}\n\n`);
+    sseClients.set(res, { ...session, sessionId });
     const ping = setInterval(() => res.write(': ping\n\n'), 15000);
     req.on('close', () => { clearInterval(ping); sseClients.delete(res); });
     return;
   }
+  // ---- Sessions: the list, and starting, archiving, reopening and deleting one (admins) ----
+  if (urlPath === '/api/sessions' && req.method === 'GET') {
+    return sendJson(res, 200, { version: sessions.version, sessions: sessions.list(), current: sessionId });
+  }
+  if (urlPath === '/api/sessions' && req.method === 'POST') {
+    if (!admin) return adminOnly(res);
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    let made;
+    try {
+      made = sessions.create({ name: body.name, timeZone: body.timeZone });
+    } catch (err) {
+      return sendJson(res, 400, { error: err.message });
+    }
+    sessionsChanged();
+    return sendJson(res, 200, { session: { id: made.id, name: made.name }, sessions: sessions.list() });
+  }
+  if (['/api/sessions/archive', '/api/sessions/reopen', '/api/sessions/delete'].includes(urlPath) && req.method === 'POST') {
+    if (!admin) return adminOnly(res);
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const id = String(body.id || '');
+    const action = urlPath.slice('/api/sessions/'.length);
+    const ok = action === 'archive' ? sessions.archive(id) : action === 'reopen' ? sessions.reopen(id) : sessions.remove(id);
+    if (!ok) {
+      return sendJson(res, 409, { error: action === 'delete' ? 'Only an archived session can be deleted: archive it first.'
+        : action === 'archive' ? 'That session isn\'t live.' : 'That session is already live.' });
+    }
+    sessionsChanged();
+    // Its own windows learn it went live or quiet (the version moved on).
+    const changed = sessions.get(id);
+    if (changed) broadcast('wall', { version: changed.version, clientId: '', session: { id: changed.id, name: changed.name } }, id);
+    return sendJson(res, 200, { sessions: sessions.list() });
+  }
   if (urlPath === '/api/wall' && req.method === 'GET') {
-    return sendJson(res, 200, { version: wallStore.version, wall: wallStore.wall });
+    const w = sessions.wallOf(sessionId);
+    return w ? sendJson(res, 200, w) : sendJson(res, 404, { error: 'No such session.' });
   }
   if (urlPath === '/api/wall' && req.method === 'PUT') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    if (!current) return sendJson(res, 404, { error: 'No such session.' });
     const body = await readBody(req, 512 * 1024);
     if (!admin && body.wall && typeof body.wall === 'object') {
-      const kept = wallStore.wall?.settings || {};
+      const kept = current.settings || {};
       body.wall.settings = { ...(body.wall.settings || {}) };
       for (const key of ADMIN_SETTINGS) {
         if (key in kept) body.wall.settings[key] = kept[key];
@@ -382,31 +500,30 @@ async function handleApi(req, res, urlPath, session) {
       // switching sessions still work).
       if (addsFeeds(body.wall)) return sendJson(res, 403, { error: 'Only the wall\'s admin can add feeds.' });
     }
-    if (wallStore.stale(body.wall)) {
-      return sendJson(res, 409, { error: 'This page is older than sessions: reload it.' });
-    }
-    const version = wallStore.save(body.wall);
+    if (body.wall && !body.wall.session) return sendJson(res, 409, { error: 'This page is older than sessions: reload it.' });
+    const version = sessions.save(sessionId, body.wall);
     if (version == null) return sendJson(res, 400, { error: 'Invalid wall' });
-    const session = wallStore.wall.session;
-    broadcast('wall', { version, clientId: String(body.clientId || ''), session: session ? { id: session.id, name: session.name } : null });
-    youtube.wallChanged();
-    ingest.wallChanged();
+    broadcast('wall', { version, clientId: String(body.clientId || ''), session: { id: current.id, name: current.name } }, sessionId);
+    sessionsChanged(); // the name or feed count in every panel's list
     return sendJson(res, 200, { version });
   }
   if (urlPath === '/api/youtube' && req.method === 'GET') {
-    return sendJson(res, 200, youtubeFor(role, link));
+    return sendJson(res, 200, youtubeFor(role, link, sessionId));
   }
   // ---- User links: an admin generates and revokes them; each signs browsers in as users ----
   if (urlPath === '/api/links' && req.method === 'GET') {
-    return sendJson(res, 200, { enabled: auth.enabled, links: userLinks.list(PUBLIC_URL) });
+    return sendJson(res, 200, { enabled: auth.enabled, links: linkList() });
   }
   if (urlPath === '/api/links' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     if (!auth.enabled) return sendJson(res, 409, { error: 'User links need a wall password (IXG_PASSWORD): without one, anyone who can reach the wall is already an admin.' });
     const body = await readBody(req, 2000);
-    const { error } = userLinks.create({ name: body.name, days: body.days, youtube: body.youtube !== false });
+    // A link for one session: that session's id, which has to exist.
+    const forSession = typeof body.session === 'string' && body.session ? body.session : null;
+    if (forSession && !sessions.get(forSession)) return sendJson(res, 400, { error: 'No such session.' });
+    const { error } = userLinks.create({ name: body.name, days: body.days, youtube: body.youtube !== false, session: forSession });
     if (error) return sendJson(res, 400, { error });
-    return sendJson(res, 200, { links: userLinks.list(PUBLIC_URL) });
+    return sendJson(res, 200, { links: linkList() });
   }
   if (urlPath === '/api/links/revoke' && req.method === 'POST') {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
@@ -419,7 +536,7 @@ async function handleApi(req, res, urlPath, session) {
         stream.end();
       }
     }
-    return sendJson(res, 200, { links: userLinks.list(PUBLIC_URL) });
+    return sendJson(res, 200, { links: linkList() });
   }
   // Anyone's key goes in here (checked with YouTube first) and never comes back out: pages
   // only learn whether one is set.
@@ -451,7 +568,8 @@ async function handleApi(req, res, urlPath, session) {
         `Google only returns sign-ins to https addresses or to localhost, not to ${PUBLIC_URL}. On the computer running this wall, open ${credentials.localUrl}, sign in to the wall, and sign the channel in from Settings there. Every window of the wall then gets its ingest health.`, false));
     }
     try {
-      return redirect(res, credentials.authUrl());
+      // ?purpose=drive: the Google Drive sign-in (gdrive.js), with the same client.
+      return redirect(res, credentials.authUrl(query.get('purpose') === 'drive' ? 'drive' : 'channel'));
     } catch (err) {
       return sendHtml(res, 400, oauthPage('Can\'t start the sign-in', err.message, false));
     }
@@ -459,8 +577,10 @@ async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/youtube/oauth/callback' && req.method === 'GET') {
     const q = new URL(req.url, 'http://localhost').searchParams;
     try {
-      const title = await credentials.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error') });
-      return sendHtml(res, 200, oauthPage('Signed in', `IXG Wall now reads ingest health for the feeds on ${title}. You can close this window.`, true));
+      const { purpose, name } = await credentials.finish({ code: q.get('code'), state: q.get('state'), error: q.get('error') });
+      return sendHtml(res, 200, oauthPage('Signed in', purpose === 'drive'
+        ? `IXG Wall is signed in to Google Drive as ${name}. Paste the folder's link in Settings if you haven't. You can close this window.`
+        : `IXG Wall now reads ingest health for the feeds on ${name}. You can close this window.`, true));
     } catch (err) {
       return sendHtml(res, 400, oauthPage('Sign-in didn\'t finish', err.message, false));
     }
@@ -473,8 +593,8 @@ async function handleApi(req, res, urlPath, session) {
     return sendJson(res, 200, { ingest: ingest.state() });
   }
   if (urlPath === '/api/youtube/history' && req.method === 'GET') {
-    const id = new URL(req.url, 'http://localhost').searchParams.get('id') || '';
-    return sendJson(res, 200, { id, series: youtube.series(id) });
+    const id = query.get('id') || '';
+    return sendJson(res, 200, { id, series: youtube.series(id, sessionId) });
   }
   // ---- Automatic source screenshots: a page claims a job, takes it, and reports back ----
   if ((urlPath === '/api/capture/claim' || urlPath === '/api/capture/result') && req.method === 'POST') {
@@ -499,10 +619,12 @@ async function handleApi(req, res, urlPath, session) {
     if (!/^[\w-]{11}$/.test(id)) return sendJson(res, 400, { ok: false, reason: 'no-source', message: 'Source URL unavailable for this feed' });
     const queued = sourceCapture.waiting;
     try {
-      const name = (facts) => readableName({ label: autoCapture.label(id), facts, kind: 'manual' });
-      const shot = await sourceCapture.capture({ videoId: id, name, subfolder: sessionFolder(wallStore.wall?.session?.name) });
-      toSlack('manual', id, shot);
-      return sendJson(res, 200, { ok: true, file: shot.file, facts: shot.facts, note: shot.note, detail: shotDetail(shot), queued, slack: slack.configured() });
+      const sessionName = current?.name || '';
+      const label = current?.streams.find((x) => x.source?.id === id)?.label || autoCapture.label(id);
+      const name = (facts) => readableName({ label, facts, kind: 'manual' });
+      const shot = await sourceCapture.capture({ videoId: id, name, subfolder: shotFolder(sessionName, label, id, new Date(), (current?.streams || []).map((x) => x.label), secrets.shots()) });
+      deliver('manual', id, shot, null, sessionName);
+      return sendJson(res, 200, { ok: true, file: shot.file, facts: shot.facts, note: shot.note, detail: shotDetail(shot), queued, slack: slack.configured(), kept: shot.kept, tookMs: shot.tookMs });
     } catch (err) {
       return sendJson(res, 200, { ok: false, reason: err.reason || 'failed', message: err.reason ? err.message : `Screenshot capture failed: ${err.message}`, queued });
     }
@@ -518,6 +640,72 @@ async function handleApi(req, res, urlPath, session) {
     if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
     const result = await slack.test();
     return sendJson(res, 200, { ...result, slack: slack.info() });
+  }
+  // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations (admin) ----
+  if (urlPath === '/api/shots' && req.method === 'GET') return sendJson(res, 200, { shots: shotsInfo() });
+  if (urlPath === '/api/shots' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 4000);
+    const patch = {};
+    if (body.layout !== undefined) {
+      if (!LAYOUTS.includes(body.layout)) return sendJson(res, 400, { error: 'Unknown folder layout.' });
+      patch.layout = body.layout;
+    }
+    if (body.feedNames !== undefined) {
+      if (!FEED_NAMES.includes(body.feedNames)) return sendJson(res, 400, { error: 'Unknown feed folder naming.' });
+      patch.feedNames = body.feedNames;
+    }
+    if (body.folder !== undefined) {
+      const folder = String(body.folder || '').trim();
+      if (folder && !path.isAbsolute(folder)) return sendJson(res, 400, { error: 'Give the folder as a full path (e.g. D:\\Screenshots), or leave it empty for the default.' });
+      patch.folder = folder;
+    }
+    secrets.setShots(patch);
+    applyShotFolder();
+    return sendJson(res, 200, { shots: shotsInfo() });
+  }
+  if (urlPath.startsWith('/api/gdrive') || urlPath.startsWith('/api/onedrive')) {
+    const dest = urlPath.startsWith('/api/gdrive') ? gdrive : onedrive;
+    const action = urlPath.replace(/^\/api\/(gdrive|onedrive)\/?/, '');
+    if (action === 'start' && req.method === 'GET' && dest === onedrive) {
+      try {
+        return redirect(res, onedrive.authUrl());
+      } catch (err) {
+        return sendHtml(res, 400, oauthPage('Can\'t start the sign-in', err.message, false));
+      }
+    }
+    if (action === 'callback' && req.method === 'GET' && dest === onedrive) {
+      try {
+        const account = await onedrive.finish({ code: query.get('code'), state: query.get('state'), error: query.get('error'), errorDescription: query.get('error_description') });
+        return sendHtml(res, 200, oauthPage('Signed in', `IXG Wall is signed in to OneDrive as ${account}. Paste the folder's sharing link in Settings if you haven't. You can close this window.`, true));
+      } catch (err) {
+        return sendHtml(res, 400, oauthPage('Sign-in didn\'t finish', err.message, false));
+      }
+    }
+    if (req.method !== 'POST') return sendJson(res, 404, { error: 'Not found' });
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 4000);
+    if (action === '') {
+      const result = await dest.setFolder(body.folder);
+      return sendJson(res, result.status, { shots: shotsInfo(), check: result.check || null, error: result.error });
+    }
+    if (action === 'client' && dest === onedrive) {
+      const result = await onedrive.saveClient({ clientId: body.clientId, clientSecret: body.clientSecret });
+      return sendJson(res, result.status, { shots: shotsInfo(), check: result.check || null, error: result.error });
+    }
+    if (action === 'enabled') {
+      dest.setEnabled(body.on !== false);
+      return sendJson(res, 200, { shots: shotsInfo() });
+    }
+    if (action === 'signout') {
+      await dest.signOut();
+      return sendJson(res, 200, { shots: shotsInfo() });
+    }
+    if (action === 'test') {
+      const result = await dest.test();
+      return sendJson(res, 200, { ...result, shots: shotsInfo() });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
   }
   if (urlPath === '/api/status' && req.method === 'GET') {
     return sendJson(res, 200, { telemetry: telemetry.latest, browser: browserStatus() });
@@ -622,7 +810,19 @@ const server = http.createServer((req, res) => {
     if (!auth.enabled || signedIn) return redirect(res, '/');
     return serveFile(res, 'login.html');
   }
-  const rel = path.posix.normalize(urlPath === '/' ? '/index.html' : urlPath).slice(1);
+  // A window shows one session: /s/<id>. The bare address goes to the link's session, or
+  // the live one started most recently.
+  const scopedTo = session?.linkId ? userLinks.get(session.linkId)?.session || null : null;
+  if (urlPath === '/') return redirect(res, `/s/${scopedTo || sessions.default().id}`);
+  const page = /^\/s\/([\w-]{1,64})$/.exec(urlPath);
+  if (page) {
+    if (scopedTo && page[1] !== scopedTo) return redirect(res, `/s/${scopedTo}`);
+    if (!sessions.get(page[1])) return redirect(res, '/');
+    return serveFile(res, 'index.html');
+  }
+  // The page's own files, asked for relative to /s/<id> (style.css → /s/style.css, fonts/…):
+  // the same files as at the root.
+  const rel = path.posix.normalize(urlPath.replace(/^\/s\//, '/')).slice(1);
   if (!rel || rel.startsWith('..') || rel.includes('\\') || rel.includes('\0')) {
     res.writeHead(403).end('Forbidden');
     return;
@@ -670,6 +870,8 @@ server.listen(PORT, HOST, () => {
   youtube.start();
   ingest.start();
   studio.start();
+  sourceCapture?.start();
+  preloadShots();
   if (OPEN) {
     // Give an adopted wall window a moment to be recognised before launching a new one.
     setTimeout(() => wallBrowser.launch()
@@ -685,6 +887,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     telemetry.stop();
     ingest.stop();
     studio.stop();
+    sourceCapture?.stop();
     youtube.stop(); // writes the audience history so a restart keeps it
     process.exit(0);
   });

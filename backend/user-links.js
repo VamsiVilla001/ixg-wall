@@ -2,7 +2,9 @@
 // shares it; whoever opens it is signed in as a user. A user operates the wall. The admin
 // decides when making a link whether it ships the YouTube numbers and ingest health
 // (`youtube`, on by default): those are read with the admin's API key and channel sign-ins,
-// which stay out of users' pages either way (server.js strips and blocks them).
+// which stay out of users' pages either way (server.js strips and blocks them). A link can
+// be for one session (`session`: its id), so whoever opens it sees that event alone, or
+// for every session.
 // A link works until it's revoked (or the optional expiry passes); revoking it signs out
 // every browser that used it, on its next request.
 const crypto = require('crypto');
@@ -33,13 +35,14 @@ class UserLinks {
       lastUsedAt: l.lastUsedAt || null,
       expired: !!l.expiresAt && Date.parse(l.expiresAt) <= now,
       youtube: l.youtube !== false,
+      session: l.session || null,
       url: linkUrl(publicUrl, l.token),
     }));
   }
 
-  // { name, days, youtube }: days 0 or missing = until revoked; youtube false = the link
-  // carries no YouTube numbers or ingest health.
-  create({ name, days, youtube } = {}) {
+  // { name, days, youtube, session }: days 0 or missing = until revoked; youtube false = the
+  // link carries no YouTube numbers or ingest health; session = the one session it opens.
+  create({ name, days, youtube, session } = {}) {
     const label = String(name || '').trim().slice(0, NAME_MAX);
     if (!label) return { error: 'Give the link a name, e.g. who it\'s for.' };
     if (this.all().length >= MAX_LINKS) return { error: `There are already ${MAX_LINKS} links: revoke some first.` };
@@ -53,6 +56,7 @@ class UserLinks {
       createdAt: now.toISOString(),
       expiresAt: d ? new Date(now.getTime() + d * 86400e3).toISOString() : null,
       youtube: youtube !== false,
+      session: typeof session === 'string' && session ? session : null,
       lastUsedAt: null,
     };
     this.secrets.data.userLinks = [...this.all(), link];

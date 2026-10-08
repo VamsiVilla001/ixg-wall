@@ -24,10 +24,10 @@ const ON_AIR = new Set(['live', 'liveStarting', 'testing', 'testStarting']);
 const receiving = (v) => v.streamStatus === 'active' && v.health !== 'noData';
 
 class IngestHealth extends EventEmitter {
-  constructor({ credentials, wallStore, pollMs }) {
+  constructor({ credentials, store, pollMs }) {
     super();
     this.credentials = credentials;
-    this.wallStore = wallStore;
+    this.store = store;             // every live session's feeds (session-store.js)
     this.pollMs = pollMs;           // shares the YouTube API refresh interval
     this.owners = new Map();        // video id -> { channelId, streamId, broadcast, endedAt, checkedAt }
     this.asked = new Set();         // video ids every signed-in channel was asked about
@@ -113,7 +113,7 @@ class IngestHealth extends EventEmitter {
   }
 
   ids() {
-    return [...new Set((this.wallStore.wall?.streams || []).map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))];
+    return [...new Set(this.store.feeds().map((s) => s.source?.id).filter((id) => VIDEO_ID.test(id)))];
   }
 
   ok(channelId) {

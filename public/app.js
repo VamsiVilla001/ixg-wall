@@ -4,7 +4,18 @@
   // ---------------------------------------------------------------------------
   // Config
   // ---------------------------------------------------------------------------
-  const STORAGE_KEY = 'ixg-multiviewer:v1'; // the app's name before it became IXG Wall; kept so saved walls carry over
+  // This browser's copy of the wall, per session (the address names the session, /s/<id>).
+  // The app's old name is kept so saved walls carry over.
+  const STORAGE_KEY = `ixg-multiviewer:v1${sessionFromAddress() ? `:${sessionFromAddress()}` : ''}`;
+  // The session this window shows: /s/<id> in the address. Without one (an old bookmark, a
+  // file:// page) the backend answers with its default session. Every call about the wall
+  // names it, so nothing this window does reaches another session.
+  const SESSION_ID = sessionFromAddress();
+  const withSession = (url) => (SESSION_ID ? `${url}${url.includes('?') ? '&' : '?'}session=${encodeURIComponent(SESSION_ID)}` : url);
+  function sessionFromAddress() {
+    const p = typeof location === 'object' && location ? String(location.pathname || '') : '';
+    return (/^\/s\/([\w-]{1,64})$/.exec(p) || [])[1] || null;
+  }
   const DEFAULT_SETTINGS = {
     checkIntervalSec: 2,
     driftThresholdSec: 4,
@@ -303,7 +314,7 @@
     },
     saveLocal() {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings, session, streams, savedSessions }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings, session, streams }));
       } catch {
         // storage unavailable: the backend copy (if any) still has it
       }
@@ -318,12 +329,11 @@
   };
 
   const settings = { ...DEFAULT_SETTINGS };
-  // Sessions: `streams` are the active session's feeds, the only ones that load. Earlier
-  // sessions keep their feeds in `savedSessions` until someone reopens one.
+  // Sessions: `streams` are this window's session's feeds, the only ones that load here.
+  // `sessionList` is every session the backend has (live or archived), for the panel.
   const streams = [];
-  let session = null;          // { id, name, startedAt }
-  const savedSessions = [];    // [{ id, name, startedAt, endedAt, streams }], newest first
-  const MAX_SAVED_SESSIONS = 50;
+  let session = null;          // { id, name, startedAt, endedAt, timeZone, live }
+  const sessionList = [];      // [{ id, name, startedAt, endedAt, live, feeds }], newest first
   const validStream = (s) => s && s.id && s.source?.kind === 'video' && VIDEO_ID.test(s.source.id);
   // Sessions are stamped in UTC (startedAt, endedAt) with the browser's time zone, and always
   // shown in local time: "Sat, 4 Oct 2026, 15:42 GMT+5:30".
@@ -360,25 +370,24 @@
     if (!TIMELINE_SPANS.includes(settings.timelineSpanMin)) settings.timelineSpanMin = DEFAULT_SETTINGS.timelineSpanMin;
     delete settings.ytApiKey; // walls saved before the key moved to the server carried it here
     const list = (Array.isArray(data?.streams) ? data.streams : []).filter(validStream);
-    const saved = (Array.isArray(data?.savedSessions) ? data.savedSessions : [])
-      .filter((s) => s && s.id && typeof s.name === 'string' && Array.isArray(s.streams))
-      .map((s) => ({ ...s, streams: s.streams.filter(validStream) }));
+    if (Array.isArray(data?.sessions)) {
+      sessionList.splice(0, sessionList.length, ...data.sessions.filter((x) => x && x.id && typeof x.name === 'string'));
+    }
     if (data?.session?.id) {
       session = {
         id: data.session.id,
         name: String(data.session.name || 'Session'),
         startedAt: data.session.startedAt || null,
+        endedAt: data.session.endedAt || null,
         timeZone: data.session.timeZone || null,
+        live: data.session.live !== false,
       };
       streams.splice(0, streams.length, ...list);
     } else {
-      // A wall from before sessions (this browser's copy, with the backend offline): as the
-      // server does, its feeds become a saved session and the wall starts empty.
-      if (list.length) saved.unshift({ ...newSession('Before sessions'), endedAt: new Date().toISOString(), streams: list });
+      // This browser's copy from before sessions, with the backend offline: an empty session.
       session = newSession();
       streams.length = 0;
     }
-    savedSessions.splice(0, savedSessions.length, ...saved.slice(0, MAX_SAVED_SESSIONS));
   }
   applyWall(store.load());
 
@@ -427,6 +436,7 @@
     if (server.auth && isAdmin()) loadLinks();
     setText($('#perf-title'), server.hosted ? 'This computer & rendering' : 'Laptop & rendering');
     renderSlack();
+    renderShots();
   }
 
   const clientId = uid();
@@ -437,7 +447,7 @@
   async function loadServerWall() {
     if (location.protocol === 'file:') return;
     try {
-      const res = await api('/api/wall', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+      const res = await api(withSession('/api/wall'), { cache: 'no-store', signal: AbortSignal.timeout(2500) });
       if (!res.ok) return;
       const body = await res.json();
       backendWall = true;
@@ -456,10 +466,10 @@
   async function pushWall() {
     if (!backendWall) return;
     try {
-      const res = await api('/api/wall', {
+      const res = await api(withSession('/api/wall'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' },
-        body: JSON.stringify({ wall: { settings, session, streams, savedSessions }, clientId }),
+        body: JSON.stringify({ wall: { settings, session, streams }, clientId }),
       });
       if (res.ok) wallVersion = (await res.json()).version;
     } catch {
@@ -474,7 +484,7 @@
   async function pullRemoteWall() {
     let body;
     try {
-      const res = await api('/api/wall', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+      const res = await api(withSession('/api/wall'), { cache: 'no-store', signal: AbortSignal.timeout(5000) });
       if (!res.ok) return false;
       body = await res.json();
     } catch {
@@ -2707,7 +2717,7 @@
   async function loadViewerHistory(tile) {
     const id = tile.stream.source.id;
     try {
-      const res = await api(`/api/youtube/history?id=${encodeURIComponent(id)}`);
+      const res = await api(withSession(`/api/youtube/history?id=${encodeURIComponent(id)}`));
       if (!res.ok) return;
       viewerSeries = { id, series: (await res.json()).series || [] };
       if (inspected === tile) renderFeedSheet();
@@ -2805,7 +2815,7 @@
   // and would otherwise leave the key on "Checking…" forever.
   async function probeYouTubeBackend() {
     try {
-      const res = await api('/api/youtube', { cache: 'no-store' });
+      const res = await api(withSession('/api/youtube'), { cache: 'no-store' });
       backendYoutube = res.ok;
       if (res.ok && !ytState) applyYouTube(await res.json());
     } catch {
@@ -3511,7 +3521,7 @@
 
   function connectBackend() {
     if (location.protocol === 'file:' || !window.EventSource) return;
-    const source = new EventSource('/api/telemetry');
+    const source = new EventSource(withSession('/api/telemetry'));
     source.onmessage = (e) => {
       try {
         backend.latest = JSON.parse(e.data);
@@ -3531,9 +3541,19 @@
     });
     // Another window saved the wall: take its changes in place (pullRemoteWall). Only if
     // that can't be done is a reload offered. A drag in progress finishes first.
+    source.addEventListener('sessions', (e) => {
+      let data;
+      try { data = JSON.parse(e.data); } catch { return; }
+      if (!Array.isArray(data.sessions)) return;
+      sessionList.splice(0, sessionList.length, ...data.sessions.filter((x) => x && x.id && typeof x.name === 'string'));
+      const me = sessionList.find((x) => x.id === session?.id);
+      if (me && session) session.live = me.live;
+      renderSession();
+    });
     source.addEventListener('wall', async (e) => {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
+      if (data.session?.id && session && data.session.id !== session.id) return; // another session's
       if (data.clientId === clientId || data.version <= wallVersion) return;
       while (feedDrag) await new Promise((r) => setTimeout(r, 300));
       if (await pullRemoteWall()) return;
@@ -4649,6 +4669,7 @@
       meta.textContent = [
         l.expired ? 'Expired' : l.expiresAt ? `Until ${localStamp(l.expiresAt, { short: true })}` : 'Until revoked',
         l.youtube ? 'YouTube numbers & ingest' : 'no YouTube data',
+        l.session ? `only ${l.sessionName || 'one session'}` : 'any session',
         l.lastUsedAt ? `opened ${fmtDuration(Date.now() - Date.parse(l.lastUsedAt))} ago` : 'not opened yet',
       ].join(' · ');
       meta.dataset.tone = l.expired ? 'warn' : '';
@@ -4693,7 +4714,9 @@
       $('#link-name').focus();
       return;
     }
-    if (await linksAction('/api/links', { name, days: Number($('#link-days').value), youtube: $('#link-youtube').checked })) {
+    // For this session alone (its id goes with the link), or for any session.
+    const forSession = $('#link-session').checked ? session?.id || null : null;
+    if (await linksAction('/api/links', { name, days: Number($('#link-days').value), youtube: $('#link-youtube').checked, session: forSession })) {
       $('#link-name').value = '';
       // The new link is last: copy it straight away, ready to share.
       const row = $('#link-list').lastElementChild;
@@ -4719,7 +4742,7 @@
     if (c && (c.loading || c.at >= ytStatsAt)) return c.series;
     const entry = { at: ytStatsAt, series: c?.series || [], loading: true };
     viewerHistory.set(id, entry);
-    api(`/api/youtube/history?id=${encodeURIComponent(id)}`)
+    api(withSession(`/api/youtube/history?id=${encodeURIComponent(id)}`))
       .then((res) => (res.ok ? res.json() : null))
       .then((body) => {
         if (Array.isArray(body?.series)) entry.series = body.series;
@@ -5370,12 +5393,15 @@
     wall.congested = false;
   }
 
-  // ---- Sessions: each event's feeds kept apart ---------------------------------------
-  // Only the active session's feeds load. Starting a new session or opening a saved one puts
-  // the current feeds away in the saved list (an empty session isn't worth keeping).
+  // ---- Sessions: each event's wall kept apart -----------------------------------------
+  // A window shows one session (/s/<id>). Any number can be live at once: the panel lists
+  // them all, opens another in this or a new window, starts a new one, and (admins) archives,
+  // reopens or deletes one. An archived session keeps its feeds but is polled and
+  // screenshotted no more; only an archived one can be deleted.
   const $sessionPanel = $('#session-panel');
   const $sessionToggle = $('#session-toggle');
   const feedCount = (n) => `${n} feed${n === 1 ? '' : 's'}`;
+  const sessionUrl = (id) => `/s/${encodeURIComponent(id)}`;
   // "Sat, 4 Oct 2026, 15:42 → 18:10" (the end date only when it's another day).
   function sessionSpan(s) {
     if (!s.endedAt) return localStamp(s.startedAt);
@@ -5383,110 +5409,153 @@
     return `${localStamp(s.startedAt)} → ${sameDay ? localStamp(s.endedAt, { timeOnly: true }) : localStamp(s.endedAt)}`;
   }
 
-  function putAwayCurrent() {
-    if (!streams.length) return;
-    savedSessions.unshift({ ...session, endedAt: new Date().toISOString(), streams: streams.slice() });
-    savedSessions.splice(MAX_SAVED_SESSIONS);
-  }
-
-  function switchTo(next, feeds, message) {
-    putAwayCurrent();
-    teardownTiles();
-    session = next;
-    streams.splice(0, streams.length, ...feeds);
-    streams.forEach(addTile);
-    store.save();
-    logEvent(null, message);
-    updateLayout();
-    updateSummary();
-    renderSession();
-  }
-
-  async function startSession(name) {
-    if (streams.length) {
-      const ok = await ask({
-        title: `Start ${name}?`,
-        body: `${session.name} (${feedCount(streams.length)}) is saved to the session list and its players stop. The wall starts empty.`,
-        confirm: 'Start new session',
-      });
-      if (!ok) return false;
+  async function sessionAction(url, body) {
+    try {
+      const res = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify(body || {}) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { error: res.status === 404 ? 'The running backend is older than this page: restart it.' : data.error || `HTTP ${res.status}` };
+      if (Array.isArray(data.sessions)) {
+        sessionList.splice(0, sessionList.length, ...data.sessions);
+        renderSession();
+      }
+      return data;
+    } catch {
+      return { error: 'Backend offline.' };
     }
-    switchTo(newSession(name), [], `Started session ${name}`);
+  }
+
+  // A new, empty live session, opened in this window. The current one keeps running for
+  // every other window showing it. Without a backend there's only this browser's wall:
+  // it's emptied and renamed, as a new event here.
+  async function startSession(name) {
+    if (!backendWall) {
+      if (streams.length) {
+        const ok = await ask({ title: `Start ${name}?`, body: `Without a backend only one session exists here: ${session.name} (${feedCount(streams.length)}) is replaced and its players stop.`, confirm: 'Start new session' });
+        if (!ok) return false;
+      }
+      teardownTiles();
+      session = newSession(name);
+      streams.length = 0;
+      store.save();
+      logEvent(null, `Started session ${name}`);
+      updateLayout();
+      updateSummary();
+      renderSession();
+      return true;
+    }
+    const r = await sessionAction('/api/sessions', { name, timeZone: LOCAL_ZONE });
+    if (r.error) {
+      logEvent(null, `Couldn't start session ${name}: ${r.error}`, 'bad');
+      return false;
+    }
+    logEvent(null, `Started session ${name}`);
+    location.assign(sessionUrl(r.session.id));
     return true;
   }
 
-  async function openSession(id) {
-    const s = savedSessions.find((x) => x.id === id);
+  function openSession(id, newWindow = false) {
+    if (id === session.id && !newWindow) return setSessionPanel(false);
+    if (newWindow) window.open(sessionUrl(id), '_blank', 'noopener');
+    else location.assign(sessionUrl(id));
+    return undefined;
+  }
+
+  async function archiveSession(id) {
+    const s = sessionList.find((x) => x.id === id);
     if (!s) return;
     const ok = await ask({
-      title: `Open ${s.name}?`,
-      body: `Loads its ${feedCount(s.streams.length)}.${streams.length ? ` ${session.name} (${feedCount(streams.length)}) is saved to the session list and its players stop.` : ''}`,
-      confirm: 'Open session',
+      title: `Archive ${s.name}?`,
+      body: `Its ${feedCount(s.feeds)} stop being polled and screenshotted in every window. It keeps them, and can be reopened. A window showing it keeps playing what it has.`,
+      confirm: 'Archive session',
     });
-    if (!ok || !savedSessions.includes(s)) return;
-    savedSessions.splice(savedSessions.indexOf(s), 1);
-    switchTo({ id: s.id, name: s.name, startedAt: s.startedAt, timeZone: s.timeZone || null }, s.streams.filter(validStream), `Opened session ${s.name}`);
-    setSessionPanel(false);
+    if (!ok) return;
+    const r = await sessionAction('/api/sessions/archive', { id });
+    logEvent(null, r.error ? `Couldn't archive ${s.name}: ${r.error}` : `Archived session ${s.name}`, r.error ? 'bad' : 'info');
+  }
+
+  async function reopenSession(id) {
+    const s = sessionList.find((x) => x.id === id);
+    if (!s) return;
+    const r = await sessionAction('/api/sessions/reopen', { id });
+    logEvent(null, r.error ? `Couldn't reopen ${s.name}: ${r.error}` : `Reopened session ${s.name}`, r.error ? 'bad' : 'info');
   }
 
   async function deleteSession(id) {
-    const s = savedSessions.find((x) => x.id === id);
+    const s = sessionList.find((x) => x.id === id);
     if (!s) return;
     const ok = await ask({
       title: `Delete ${s.name}?`,
-      body: `Its ${feedCount(s.streams.length)} are forgotten. This can't be undone.`,
+      body: `Its ${feedCount(s.feeds)} are forgotten. This can't be undone.`,
       confirm: 'Delete session',
       variant: 'destructive',
     });
-    if (!ok || !savedSessions.includes(s)) return;
-    savedSessions.splice(savedSessions.indexOf(s), 1);
-    store.save();
-    logEvent(null, `Deleted saved session ${s.name}`);
-    renderSession();
+    if (!ok) return;
+    const r = await sessionAction('/api/sessions/delete', { id });
+    if (r.error) return logEvent(null, `Couldn't delete ${s.name}: ${r.error}`, 'bad');
+    logEvent(null, `Deleted session ${s.name}`);
+    if (id === session.id) location.assign('/'); // this window's own session is gone: the default one
+    return undefined;
   }
 
   // The header button: cheap, so the summary refresh keeps it current.
   function renderSessionChip() {
+    const live = sessionList.filter((x) => x.live).length;
     setText($('#session-name'), session.name);
-    setText($('#session-when'), localStamp(session.startedAt, { short: true }));
-    $sessionToggle.title = `Session: ${session.name} · started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} · ${savedSessions.length} saved`;
+    setText($('#session-when'), session.live === false ? 'Archived' : localStamp(session.startedAt, { short: true }));
+    $sessionToggle.title = `Session: ${session.name} · started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)}${session.live === false ? ' · archived' : ''} · ${sessionList.length} session${sessionList.length === 1 ? '' : 's'}, ${live} live`;
     const title = `${session.name} · IXG Wall`;
     if (document.title !== title) document.title = title;
+    setText($('#link-session-name'), session.name); // the "only this session" choice when making a user link
   }
 
   function renderSession() {
     renderSessionChip();
     if ($sessionPanel.hidden) return;
     if (document.activeElement !== $('#session-name-input')) $('#session-name-input').value = session.name;
-    setText($('#session-meta'), `Started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} on the wall`);
-    setText($('#session-saved-title'), savedSessions.length ? `Saved sessions · ${savedSessions.length}` : 'No saved sessions yet');
-    $('#session-list').replaceChildren(...savedSessions.map((s) => {
+    setText($('#session-meta'), `Started ${localStamp(session.startedAt, { zone: true })} · ${feedCount(streams.length)} on the wall · ${session.live === false ? 'archived: not polled or screenshotted' : 'live'}`);
+    // A link made for one session sees that session alone.
+    const shown = server.linkSession ? sessionList.filter((x) => x.id === server.linkSession) : sessionList;
+    const live = shown.filter((x) => x.live).length;
+    setText($('#session-saved-title'), shown.length ? `Sessions · ${shown.length} (${live} live)` : 'No sessions yet');
+    $('#session-new-form').hidden = !!server.linkSession || (server.auth && !isAdmin());
+    $('#session-list').replaceChildren(...shown.map((x) => {
+      const current = x.id === session.id;
       const li = document.createElement('li');
       li.className = 'session-row';
+      if (current) li.dataset.current = '1';
       const info = document.createElement('div');
       info.className = 'session-info';
       const name = document.createElement('span');
       name.className = 'session-row-name';
-      name.textContent = s.name;
+      name.textContent = current ? `${x.name} · this window` : x.name;
       const meta = document.createElement('span');
       meta.className = 'session-row-meta';
-      meta.textContent = `${sessionSpan(s)} · ${feedCount(s.streams.length)}`;
-      meta.title = `Started ${localStamp(s.startedAt, { zone: true })}${s.endedAt ? ` · saved ${localStamp(s.endedAt, { zone: true })}` : ''}`;
-      const labels = document.createElement('span');
-      labels.className = 'session-row-feeds';
-      labels.textContent = s.streams.slice(0, 4).map((x) => x.label).join(' · ') + (s.streams.length > 4 ? ' …' : '');
-      labels.title = s.streams.map((x) => `${x.label}${x.addedAt ? ` · added ${localStamp(x.addedAt, { short: true })}` : ''}`).join('\n');
-      info.append(name, meta, labels);
-      const open = document.createElement('button');
-      open.className = 'btn btn-outline btn-xs';
-      open.textContent = 'Open';
-      open.addEventListener('click', () => openSession(s.id));
-      const del = document.createElement('button');
-      del.className = 'btn btn-ghost btn-xs';
-      del.textContent = 'Delete';
-      del.setAttribute('aria-label', `Delete ${s.name}`);
-      del.addEventListener('click', () => deleteSession(s.id));
-      li.append(info, open, del);
+      meta.textContent = `${x.live ? 'Live' : 'Archived'} · ${sessionSpan(x)} · ${feedCount(x.feeds)}`;
+      meta.dataset.tone = x.live ? 'ok' : '';
+      meta.title = `Started ${localStamp(x.startedAt, { zone: true })}${x.endedAt ? ` · archived ${localStamp(x.endedAt, { zone: true })}` : ''} · ${sessionUrl(x.id)}`;
+      info.append(name, meta);
+      const buttons = [];
+      const btn = (text, cls, onClick, label) => {
+        const b = document.createElement('button');
+        b.className = `btn ${cls} btn-xs`;
+        b.textContent = text;
+        if (label) b.setAttribute('aria-label', label);
+        b.addEventListener('click', onClick);
+        buttons.push(b);
+      };
+      if (!current) btn('Open', 'btn-outline', () => openSession(x.id), `Open ${x.name} in this window`);
+      btn('New window', 'btn-ghost', () => openSession(x.id, true), `Open ${x.name} in a new window`);
+      if (isAdmin()) {
+        if (x.live) btn('Archive', 'btn-ghost', () => archiveSession(x.id), `Archive ${x.name}`);
+        else {
+          btn('Reopen', 'btn-outline', () => reopenSession(x.id), `Reopen ${x.name}`);
+          btn('Delete', 'btn-ghost', () => deleteSession(x.id), `Delete ${x.name}`);
+        }
+      }
+      const actions = document.createElement('div');
+      actions.className = 'session-actions';
+      actions.append(...buttons);
+      li.append(info, actions);
       return li;
     }));
   }
@@ -5674,7 +5743,7 @@
     $('#fs-shot').disabled = true;
     shotStatus('Capturing in the background…');
     try {
-      const res = await capturePost('/api/capture/now', { id: tile.stream.source.id });
+      const res = await capturePost(withSession('/api/capture/now'), { id: tile.stream.source.id });
       const d = await res.json().catch(() => ({}));
       if (d.ok) {
         logEvent(tile, `Source screenshot saved: ${d.detail || d.file}`);
@@ -5886,7 +5955,7 @@
     let text = s.set
       ? `Posting to ${s.channelName || s.channelId}${s.team ? ` in ${s.team}` : ''}${fromEnv ? ' (set on the server)' : ''}.${s.pending ? ` ${s.pending} waiting to go.` : ''}`
       : server.backendCapture ? `Not set up: screenshots are only saved ${server.hosted ? 'on the server' : 'on this laptop'}.`
-        : 'Screenshots are posted only when the backend takes them. This one doesn\'t: it has no Chrome (a server needs one installed, see DEPLOY.md), so the Feed Meter saves them in the browser.';
+        : 'Not posted: this backend has no Chrome, so the Feed Meter saves screenshots in the browser.';
     let tone = s.set ? 'ok' : '';
     if (s.check && s.check.status !== 'ok') [text, tone] = [`${text} ${s.check.message}`, 'warn'];
     if (slackNote) [text, tone] = [slackNote.text, slackNote.tone];
@@ -5927,6 +5996,191 @@
     slackNote = { text: r.message || r.error || 'No answer', tone: r.ok ? 'ok' : 'bad' };
     renderSlack();
   });
+  // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations.
+  // The page learns each destination's account and folder, never a token or secret.
+  const shotsNote = { shots: null, gdrive: null, onedrive: null }; // { text, tone } from the last action, until the next
+  let onedriveEditingClient = false;
+  function renderShots() {
+    const sh = server.shots;
+    const $folders = $('#shots-layout').closest('.ingest-settings');
+    const $g = $('#gdrive-form').closest('.ingest-settings');
+    const $o = $('#onedrive-form').closest('.ingest-settings');
+    [$folders, $g, $o].forEach((el) => { el.hidden = !sh; }); // an older backend, or a user
+    if (!sh) return;
+    // Folders
+    if (document.activeElement !== $('#shots-layout')) $('#shots-layout').value = sh.layout;
+    if (document.activeElement !== $('#shots-feed-names')) $('#shots-feed-names').value = sh.feedNames;
+    if (document.activeElement !== $('#shots-folder')) $('#shots-folder').value = sh.folder || '';
+    $('#shots-folder').placeholder = sh.defaultFolder ? `Default: ${sh.defaultFolder}` : 'The default folder';
+    const status = (sel, note, text, tone) => {
+      setText($(sel), note ? note.text : text);
+      setTone($(sel), note ? note.tone : tone);
+    };
+    status('#shots-status', shotsNote.shots, sh.folderInUse ? `Screenshots are saved under ${sh.folderInUse}.` : 'This backend takes no screenshots itself (no Chrome): the Feed Meter saves them in the browser.', sh.folderInUse ? '' : 'warn');
+    // Google Drive
+    const g = sh.gdrive || {};
+    $('#gdrive-signin').textContent = g.signedIn ? 'Sign in with another Google account' : 'Sign in with Google';
+    $('#gdrive-signin').className = `btn btn-sm${g.signedIn ? ' btn-ghost' : ''}`;
+    $('#gdrive-form').hidden = !g.signedIn;
+    $('#gdrive-test').hidden = !g.configured;
+    $('#gdrive-toggle').hidden = !(g.signedIn && g.folder);
+    $('#gdrive-toggle').textContent = g.enabled ? 'Pause uploads' : 'Resume uploads';
+    $('#gdrive-signout').hidden = !g.signedIn;
+    if (g.folder && !$('#gdrive-folder').value) $('#gdrive-folder').value = g.folder.url || g.folder.id;
+    let gText = !g.signedIn ? 'Not set up: screenshots stay on this computer (and in Slack, if set up).'
+      : !g.folder ? `Signed in as ${g.email}. Paste the folder's link to start uploading.`
+        : `${g.enabled ? 'Uploading' : 'Paused: not uploading'} to "${g.folder.name}" as ${g.email}.${g.pending ? ` ${g.pending} waiting to go.` : ''}`;
+    let gTone = g.configured ? 'ok' : g.signedIn && g.folder && !g.enabled ? 'warn' : '';
+    if (g.check && g.check.status === 'bad') [gText, gTone] = [`${gText} ${g.check.message}`, 'bad'];
+    status('#gdrive-status', shotsNote.gdrive, gText, gTone);
+    // OneDrive
+    const o = sh.onedrive || {};
+    const clientSet = !!o.client?.set;
+    const fromEnv = o.client?.source === 'env';
+    const editing = !fromEnv && (!clientSet || onedriveEditingClient);
+    setText($('#onedrive-redirect'), o.redirectUri || '');
+    $('#onedrive-client-form').hidden = !editing;
+    $('#onedrive-client-change').hidden = editing || fromEnv || !clientSet;
+    $('#onedrive-signin').hidden = editing || !clientSet;
+    $('#onedrive-signin').textContent = o.signedIn ? 'Sign in with another Microsoft account' : 'Sign in with Microsoft';
+    $('#onedrive-signin').className = `btn btn-sm${o.signedIn ? ' btn-ghost' : ''}`;
+    $('#onedrive-form').hidden = editing || !o.signedIn;
+    $('#onedrive-test').hidden = !o.configured;
+    $('#onedrive-toggle').hidden = !(o.signedIn && o.folder);
+    $('#onedrive-toggle').textContent = o.enabled ? 'Pause uploads' : 'Resume uploads';
+    $('#onedrive-signout').hidden = editing || !o.signedIn;
+    if (o.folder && !$('#onedrive-folder').value) $('#onedrive-folder').value = o.folder.url;
+    let oText = !clientSet ? 'Not set up: register the app below, then sign in and choose the folder.'
+      : !o.signedIn ? `App saved.${o.client?.check && o.client.check.status !== 'ok' ? ` ${o.client.check.message}` : ''} Sign in with a Microsoft account that can edit the folder.`
+        : !o.folder ? `Signed in as ${o.account}. Paste the folder's sharing link to start uploading.`
+          : `${o.enabled ? 'Uploading' : 'Paused: not uploading'} to "${o.folder.name}" as ${o.account}.${o.pending ? ` ${o.pending} waiting to go.` : ''}`;
+    let oTone = o.configured ? 'ok' : o.signedIn && o.folder && !o.enabled ? 'warn' : clientSet && o.client?.check && o.client.check.status !== 'ok' ? 'warn' : '';
+    if (o.check && o.check.status === 'bad') [oText, oTone] = [`${oText} ${o.check.message}`, 'bad'];
+    status('#onedrive-status', shotsNote.onedrive, oText, oTone);
+  }
+
+  async function shotsAction(url, body) {
+    try {
+      const res = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify(body || {}) });
+      const data = await res.json().catch(() => ({}));
+      if (data.shots) server.shots = data.shots;
+      return res.status === 404 ? { error: 'The running backend is older than this page: restart it.' } : { ...data, status: res.status };
+    } catch {
+      return { error: 'Backend offline.' };
+    }
+  }
+
+  async function refreshShots() {
+    try {
+      const res = await api('/api/shots', { cache: 'no-store' });
+      if (res.ok) server.shots = (await res.json()).shots;
+    } catch { /* backend offline */ }
+    renderShots();
+  }
+
+  // A sign-in popup (Google for Drive, Microsoft for OneDrive): while it's open the page
+  // reads the destinations again now and then, so Settings shows the sign-in as soon as it lands.
+  function openDestinationSignIn(url) {
+    const popup = window.open(url, 'ixg-oauth', 'popup,width=520,height=720');
+    const timer = setInterval(() => {
+      refreshShots();
+      if (!popup || popup.closed) clearInterval(timer);
+    }, 2000);
+  }
+
+  for (const [sel, key] of [['#shots-layout', 'layout'], ['#shots-feed-names', 'feedNames']]) {
+    $(sel).addEventListener('change', async (e) => {
+      const r = await shotsAction('/api/shots', { [key]: e.target.value });
+      shotsNote.shots = r.error ? { text: r.error, tone: 'bad' } : null;
+      renderShots();
+    });
+  }
+  $('#shots-folder-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const r = await shotsAction('/api/shots', { folder: $('#shots-folder').value.trim() });
+    shotsNote.shots = r.error ? { text: r.error, tone: 'bad' } : { text: 'Saved.', tone: 'ok' };
+    renderShots();
+  });
+
+  $('#gdrive-signin').addEventListener('click', () => openDestinationSignIn('/api/youtube/oauth/start?purpose=drive'));
+  $('#gdrive-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    shotsNote.gdrive = { text: 'Checking the folder with Google Drive…', tone: '' };
+    renderShots();
+    const r = await shotsAction('/api/gdrive', { folder: $('#gdrive-folder').value.trim() });
+    shotsNote.gdrive = r.error ? { text: r.error, tone: 'bad' } : null;
+    renderShots();
+  });
+  $('#gdrive-test').addEventListener('click', async () => {
+    shotsNote.gdrive = { text: 'Uploading a test file…', tone: '' };
+    renderShots();
+    const r = await shotsAction('/api/gdrive/test');
+    shotsNote.gdrive = { text: r.message || r.error || 'No answer', tone: r.ok ? 'ok' : 'bad' };
+    renderShots();
+  });
+  $('#gdrive-toggle').addEventListener('click', async () => {
+    await shotsAction('/api/gdrive/enabled', { on: !server.shots?.gdrive?.enabled });
+    shotsNote.gdrive = null;
+    renderShots();
+  });
+  $('#gdrive-signout').addEventListener('click', async () => {
+    const ok = await ask({ title: 'Sign out of Google Drive?', body: 'Uploads to Drive stop; the folder is forgotten. Screenshots are still saved on this computer.', confirm: 'Sign out', variant: 'destructive' });
+    if (!ok) return;
+    await shotsAction('/api/gdrive/signout');
+    $('#gdrive-folder').value = '';
+    shotsNote.gdrive = null;
+    renderShots();
+  });
+
+  $('#onedrive-client-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const clientId = $('#onedrive-client-id').value.trim();
+    const clientSecret = $('#onedrive-client-secret').value.trim();
+    shotsNote.onedrive = { text: 'Checking the app with Microsoft…', tone: '' };
+    renderShots();
+    const r = await shotsAction('/api/onedrive/client', { clientId, clientSecret });
+    shotsNote.onedrive = r.error ? { text: r.error, tone: 'bad' } : null;
+    if (!r.error) {
+      $('#onedrive-client-secret').value = '';
+      onedriveEditingClient = false;
+    }
+    renderShots();
+  });
+  $('#onedrive-client-change').addEventListener('click', () => {
+    onedriveEditingClient = true;
+    $('#onedrive-client-id').value = server.shots?.onedrive?.client?.clientId || '';
+    renderShots();
+  });
+  $('#onedrive-signin').addEventListener('click', () => openDestinationSignIn('/api/onedrive/start'));
+  $('#onedrive-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    shotsNote.onedrive = { text: 'Checking the folder with OneDrive…', tone: '' };
+    renderShots();
+    const r = await shotsAction('/api/onedrive', { folder: $('#onedrive-folder').value.trim() });
+    shotsNote.onedrive = r.error ? { text: r.error, tone: 'bad' } : null;
+    renderShots();
+  });
+  $('#onedrive-test').addEventListener('click', async () => {
+    shotsNote.onedrive = { text: 'Uploading a test file…', tone: '' };
+    renderShots();
+    const r = await shotsAction('/api/onedrive/test');
+    shotsNote.onedrive = { text: r.message || r.error || 'No answer', tone: r.ok ? 'ok' : 'bad' };
+    renderShots();
+  });
+  $('#onedrive-toggle').addEventListener('click', async () => {
+    await shotsAction('/api/onedrive/enabled', { on: !server.shots?.onedrive?.enabled });
+    shotsNote.onedrive = null;
+    renderShots();
+  });
+  $('#onedrive-signout').addEventListener('click', async () => {
+    const ok = await ask({ title: 'Sign out of OneDrive?', body: 'Uploads to OneDrive stop; the folder is forgotten. Screenshots are still saved on this computer.', confirm: 'Sign out', variant: 'destructive' });
+    if (!ok) return;
+    await shotsAction('/api/onedrive/signout');
+    $('#onedrive-folder').value = '';
+    shotsNote.onedrive = null;
+    renderShots();
+  });
+
   $('#slack-remove').addEventListener('click', async () => {
     const ok = await ask({
       title: 'Stop posting screenshots to Slack?',

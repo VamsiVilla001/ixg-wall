@@ -104,7 +104,10 @@
             body: JSON.stringify(role === 'admin' ? { password: $('password').value } : { link: $('link').value }),
           });
           if (res.ok) {
-            location.replace(next);
+            // A link made for one session opens that session (the server says which).
+            const body = await res.json().catch(() => ({}));
+            const to = typeof body.next === 'string' && /^\/(?![/\\])/.test(body.next) && body.next !== '/' ? body.next : next;
+            location.replace(to);
             return;
           }
           const body = await res.json().catch(() => ({}));

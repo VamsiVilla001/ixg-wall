@@ -38,7 +38,7 @@
           <input class="input" id="session-new-name" maxlength="80" autocomplete="off" spellcheck="false" placeholder="e.g. BMSD Day 4">
           <button type="submit" class="btn btn-accent btn-sm">Start new session</button>
         </div>
-        <p class="hint">The current feeds are saved below and stop; the wall starts empty. Only the current session's feeds ever load.</p>
+        <p class="hint">Starts a new, empty live session and opens it in this window. The current session keeps running for every other window showing it: any number of sessions can be live at once, each at its own address.</p>
       </form>
       <div class="session-block">
         <p class="telemetry muted" id="session-saved-title"></p>
@@ -261,6 +261,7 @@
             <button type="submit" class="btn btn-sm">Generate link</button>
           </div>
           <label class="meter-snooze link-youtube-row"><input type="checkbox" id="link-youtube" checked> Ship YouTube numbers and ingest health with this link</label>
+          <label class="meter-snooze link-youtube-row"><input type="checkbox" id="link-session" checked> Only this session (<span id="link-session-name"></span>): whoever opens it sees this event alone</label>
         </form>
         <p class="form-error" id="link-error" role="alert" hidden></p>
         <ul class="session-list link-list" id="link-list" aria-label="User links"></ul>
@@ -341,8 +342,8 @@
           <span class="field-unit"><input class="input input-num" type="number" data-setting="ytPollSec" min="15" max="300" step="5"> s</span>
         </label>
         <p class="yt-status" id="yt-status" role="status"></p>
-        <p class="hint">Adds live viewers, likes, views and comments to every feed, and a viewer history with peak, average, lowest and trend: open a feed's Stats for the full analytics. Also privacy, embedding, HD/SD and live chat, at no extra quota. The backend polls YouTube once per interval for every open window: every 30 s uses about 3,000 of the daily 10,000 quota units for up to 50 feeds.</p>
-        <p class="hint">Any Google Cloud project's key works, whoever it belongs to. <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Get a key</a>: in Google Cloud, enable YouTube Data API v3, then create an API key under Credentials and restrict it to the YouTube Data API. A new key is checked with YouTube before it replaces the saved one. It stays on the server (secrets.json in its data folder) and is never sent back to a browser. For an address restriction, allow the server's public IP on a hosted wall, or http://localhost:8080/* on the laptop.</p>
+        <p class="hint">Live viewers, likes, views, broadcast state and the viewer history for every feed. Polled once per interval for every window: 30 s is about 3,000 of the daily 10,000 quota units for 50 feeds.</p>
+        <details class="hint setup"><summary>Get a key</summary>In <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">Google Cloud</a>, enable YouTube Data API v3, create an API key under Credentials and restrict it to that API. For an address restriction allow the server's public IP, or http://localhost:8080/* on a laptop. The key is checked with YouTube before it's saved and never sent back to a browser.</details>
 
         <div class="ingest-settings">
           <p class="telemetry muted section-title">Channel sign-in · ingest health</p>
@@ -362,8 +363,8 @@
             <button type="button" id="ingest-client-check" class="btn btn-outline btn-sm" hidden>Check again</button>
             <button type="button" id="ingest-client-change" class="btn btn-ghost btn-sm" hidden>Change OAuth client</button>
           </div>
-          <p class="hint">Sign in with the Google account of each channel the feeds stream to (read-only). Several channels can be signed in at once: each feed's ingest comes from the channel that owns it. The wall then shows how each feed's encoder stream arrives at YouTube: health (good, ok, bad), resolution, frame rate and YouTube's warnings, refreshed with the numbers above.</p>
-          <p class="hint">One-time setup, in anyone's Google Cloud project: under Credentials, create an OAuth client ID of type Web application, add this authorised redirect URI, then paste its ID and secret here. The client is checked with Google before it's saved. <code id="ingest-redirect"></code></p>
+          <p class="hint">Sign in each channel the feeds stream to: the wall then shows how its encoder stream arrives at YouTube, and its YouTube Studio audience and PCV.</p>
+          <details class="hint setup"><summary>Setup</summary>In Google Cloud (any project), under Credentials create an OAuth client ID of type Web application with this redirect URI, then paste its ID and secret here: <code id="ingest-redirect"></code></details>
         </div>
       </section>
       <section class="sheet-section">
@@ -446,7 +447,36 @@
             <option value="4">4 min</option>
           </select>
         </label>
-        <p class="hint">Takes the same screenshot as Capture source screenshot (Stats sheet), without a click: each time a feed's watching-now count beats its PCV, the highest count read so far in that broadcast (checked at every YouTube refresh; at most once per feed in the time above), and once when YouTube says a feed's broadcast is over, when the page shows the total views instead. On a laptop they're named language first, e.g. <code>[Hindi] - BMSD 2026 Semi-Finals Day 1 - 154,337 PCV - 2026-10-08 15-52.png</code>, and saved to Downloads/IXG-Wall/Screenshots in a folder named after the wall's current session, so two walls or two events never mix. The backend decides when and takes them, in a hidden browser: no window opens and focus never moves (a hosted wall's server needs Chrome installed, and keeps them in its own folder, so set up Slack below to get them). Only where the server has no Chrome does an admin's window with the Feed Meter take each one instead (with several open, only one), with the extension's names. Needs a YouTube API key for the counts. Everything queued, saved, posted, dropped or failed is recorded in the event log under Wall stats.</p>
+        <p class="hint">Taken at each feed's new PCV and when its stream ends, in a hidden browser (nothing pops up), named like <code>[Hindi] - BMSD 2026 Semi-Finals Day 1 - 154,337 PCV - 2026-10-08 15-52.png</code>. Needs a YouTube API key. The event log under Wall stats records each one.</p>
+
+        <div class="ingest-settings">
+          <p class="telemetry muted section-title">Folders</p>
+          <p class="yt-status" id="shots-status" role="status"></p>
+          <label class="field">
+            <span>Folders</span>
+            <select class="input select" id="shots-layout">
+              <option value="session-date-feed">Session / Date / Feed</option>
+              <option value="session-feed">Session / Feed</option>
+              <option value="session-date">Session / Date</option>
+              <option value="session">Session only</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Feed folder named</span>
+            <select class="input select" id="shots-feed-names">
+              <option value="short">Short: Hindi Day 1</option>
+              <option value="full">By the feed's whole label</option>
+            </select>
+          </label>
+          <form class="key-form" id="shots-folder-form">
+            <label class="key-label" for="shots-folder">Base folder on this computer</label>
+            <div class="key-row">
+              <input class="input" id="shots-folder" autocomplete="off" spellcheck="false">
+              <button type="submit" class="btn btn-sm">Save</button>
+            </div>
+          </form>
+          <p class="hint">The same folders on this computer and in every destination.</p>
+        </div>
 
         <div class="ingest-settings">
           <p class="telemetry muted section-title">Post screenshots to Slack</p>
@@ -464,8 +494,56 @@
             <button type="button" id="slack-test" class="btn btn-outline btn-sm" hidden>Send a test message</button>
             <button type="button" id="slack-remove" class="btn btn-ghost btn-sm" hidden>Stop posting to Slack</button>
           </div>
-          <p class="hint">Every screenshot this laptop takes (new PCV, stream end, and Capture source screenshot) is posted to the channel with its file name and what it shows: the sampled PCV, and YouTube Studio's official PCV at the end when the channel's sign-in has it. A post Slack can't take right now is tried again for about 15 minutes.</p>
-          <p class="hint">An invite link (join.slack.com) only lets a person join: the wall posts as a Slack app. One-time setup at <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a>: create an app in the workspace, add the bot scopes <code>files:write</code>, <code>chat:write</code> and <code>channels:read</code> (plus <code>groups:read</code> for a private channel), install it, and copy its Bot User OAuth Token. In Slack, type <code>/invite @your-app</code> in the channel, and copy the channel's ID (channel name → About, at the bottom). The token is checked with Slack before it's saved, stays on the server (secrets.json) and is never sent back to a browser.</p>
+          <p class="hint">Each screenshot is posted with its PCV.</p>
+          <details class="hint setup"><summary>Setup</summary>Create an app at <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> with the bot scopes <code>files:write</code>, <code>chat:write</code> and <code>channels:read</code> (<code>groups:read</code> for a private channel), install it and copy its Bot User OAuth Token. In Slack, type <code>/invite @your-app</code> in the channel and copy the channel's ID (channel name → About). An invite link (join.slack.com) won't work: it only lets a person join.</details>
+        </div>
+
+        <div class="ingest-settings">
+          <p class="telemetry muted section-title">Upload screenshots to Google Drive</p>
+          <p class="yt-status" id="gdrive-status" role="status"></p>
+          <form class="key-form" id="gdrive-form">
+            <label class="key-label" for="gdrive-folder">Drive folder link</label>
+            <div class="key-row">
+              <input class="input" id="gdrive-folder" autocomplete="off" spellcheck="false" placeholder="https://drive.google.com/drive/folders/…">
+              <button type="submit" class="btn btn-sm">Save folder</button>
+            </div>
+          </form>
+          <div class="perf-actions">
+            <button type="button" id="gdrive-signin" class="btn btn-sm">Sign in with Google</button>
+            <button type="button" id="gdrive-test" class="btn btn-outline btn-sm" hidden>Send a test file</button>
+            <button type="button" id="gdrive-toggle" class="btn btn-outline btn-sm" hidden>Pause uploads</button>
+            <button type="button" id="gdrive-signout" class="btn btn-ghost btn-sm" hidden>Sign out</button>
+          </div>
+          <p class="hint">Sign in with a Google account that can edit the folder, then paste the folder's link.</p><details class="hint setup"><summary>Setup</summary>Uses the Google OAuth client from Channel sign-in; enable the <strong>Google Drive API</strong> in its Google Cloud project.</details>
+        </div>
+
+        <div class="ingest-settings">
+          <p class="telemetry muted section-title">Upload screenshots to OneDrive</p>
+          <p class="yt-status" id="onedrive-status" role="status"></p>
+          <form class="key-form" id="onedrive-client-form" hidden>
+            <label class="key-label" for="onedrive-client-id">Microsoft app's Application (client) ID</label>
+            <input class="input" id="onedrive-client-id" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            <label class="key-label" for="onedrive-client-secret">Client secret (its Value)</label>
+            <div class="key-row">
+              <input class="input" id="onedrive-client-secret" type="password" autocomplete="off" spellcheck="false">
+              <button type="submit" class="btn btn-sm">Save app</button>
+            </div>
+          </form>
+          <form class="key-form" id="onedrive-form" hidden>
+            <label class="key-label" for="onedrive-folder">OneDrive folder sharing link</label>
+            <div class="key-row">
+              <input class="input" id="onedrive-folder" autocomplete="off" spellcheck="false" placeholder="https://…sharepoint.com/… or https://1drv.ms/…">
+              <button type="submit" class="btn btn-sm">Save folder</button>
+            </div>
+          </form>
+          <div class="perf-actions">
+            <button type="button" id="onedrive-signin" class="btn btn-sm" hidden>Sign in with Microsoft</button>
+            <button type="button" id="onedrive-test" class="btn btn-outline btn-sm" hidden>Send a test file</button>
+            <button type="button" id="onedrive-toggle" class="btn btn-outline btn-sm" hidden>Pause uploads</button>
+            <button type="button" id="onedrive-signout" class="btn btn-ghost btn-sm" hidden>Sign out</button>
+            <button type="button" id="onedrive-client-change" class="btn btn-ghost btn-sm" hidden>Change app</button>
+          </div>
+          <p class="hint">Register an app, sign in with a Microsoft account that can edit the folder, then paste the folder's sharing link (Share → Copy link).</p><details class="hint setup"><summary>Setup (Azure → App registrations)</summary>At <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">App registrations</a>, register an app for <em>accounts in any organizational directory and personal Microsoft accounts</em>. Authentication: add a <strong>Web</strong> redirect URI of <code id="onedrive-redirect"></code>. API permissions: Microsoft Graph delegated <strong>Files.ReadWrite</strong>, <strong>User.Read</strong>, <strong>offline_access</strong>. Certificates &amp; secrets: a client secret; copy its Value. Paste the Application (client) ID and that secret above.</details>
         </div>
       </section>
       <section class="sheet-section" id="terms">

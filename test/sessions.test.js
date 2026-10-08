@@ -1,6 +1,6 @@
-// Sessions in the stored wall (backend/wall-store.js): only the active session's feeds load,
-// a wall from before sessions starts empty with its feeds saved, and pages from before
-// sessions can't wipe the saved ones.   npm test
+// Sessions (backend/session-store.js): any number live at once, each with its own feeds,
+// version and address; a wall from before sessions is read into the new shape; archived
+// sessions keep their feeds, and only those can be deleted.   npm test
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
@@ -28,7 +28,7 @@ before(async () => {
   }));
   child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
-    env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, PORT: String(port), IXG_DATA_DIR: dataDir, IXG_YOUTUBE_API: 'http://127.0.0.1:9' },
+    env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, PORT: String(port), IXG_DATA_DIR: dataDir, IXG_YOUTUBE_API: 'http://127.0.0.1:9', IXG_SERVER_CAPTURE: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((resolve, reject) => {
@@ -44,64 +44,89 @@ after(async () => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-const getWall = async () => (await (await fetch(`${base}/api/wall`)).json()).wall;
-const putWall = (wall) => fetch(`${base}/api/wall`, {
+const api = (p, opts) => fetch(`${base}${p}`, opts);
+const json = async (p) => (await api(p)).json();
+const post = (p, body) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify(body || {}) });
+const getWall = async (id) => (await json(`/api/wall${id ? `?session=${id}` : ''}`)).wall;
+const putWall = (wall, id) => api(`/api/wall${id ? `?session=${id}` : ''}`, {
   method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify({ wall }),
 });
 
-test('a wall from before sessions starts empty, its feeds saved as a session', async () => {
+test('a wall from before sessions becomes an archived session; a new live one is the default', async () => {
   const wall = await getWall();
   assert.deepEqual(wall.streams, [], 'earlier feeds must not load');
   assert.equal(wall.session.name, 'New session');
-  assert.equal(wall.savedSessions.length, 1);
-  assert.equal(wall.savedSessions[0].name, 'Before sessions');
-  assert.deepEqual(wall.savedSessions[0].streams.map((s) => s.label), ['Hindi Test Main', 'English Test Main']);
-  // The migration is written to disk, so a restart doesn't redo it.
+  assert.equal(wall.session.live, true);
+  const archived = wall.sessions.filter((s) => !s.live);
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].name, 'Before sessions');
+  assert.equal(archived[0].feeds, 2);
   const onDisk = JSON.parse(fs.readFileSync(path.join(dataDir, 'wall.json'), 'utf8'));
-  assert.ok(onDisk.wall.session);
+  assert.ok(Array.isArray(onDisk.sessions), 'written in the new shape, so a restart doesn\'t redo it');
+  // The bare address goes to the default live session; an unknown one goes back there.
+  const home = await api('/', { redirect: 'manual' });
+  assert.equal(home.status, 302);
+  assert.equal(home.headers.get('location'), `/s/${wall.session.id}`);
+  assert.equal((await api(`/s/${wall.session.id}`)).status, 200);
+  assert.equal((await api('/s/nope', { redirect: 'manual' })).headers.get('location'), '/');
 });
 
-test('only the active session is polled, and switching sessions is just a save', async () => {
-  const wall = await getWall();
-  const opened = wall.savedSessions[0];
-  const next = {
-    settings: wall.settings,
-    session: { id: opened.id, name: opened.name, startedAt: opened.startedAt },
-    streams: opened.streams,
-    savedSessions: [],
-  };
-  assert.equal((await putWall(next)).status, 200);
-  const after2 = await getWall();
-  assert.equal(after2.session.name, 'Before sessions');
-  assert.equal(after2.streams.length, 2);
+test('several sessions live at once, each with its own feeds, version and wall', async () => {
+  const a = (await getWall()).session;
+  const made = await (await post('/api/sessions', { name: 'BMSD Day 4', timeZone: 'Asia/Kolkata' })).json();
+  const b = made.session;
+  assert.ok(b.id && b.id !== a.id);
+  assert.equal((await putWall({ settings: {}, session: { name: a.name }, streams: OLD_FEEDS.slice(0, 1) }, a.id)).status, 200);
+  assert.equal((await putWall({ settings: { ytPollSec: 15 }, session: { name: 'BMSD Day 4' }, streams: OLD_FEEDS.slice(1) }, b.id)).status, 200);
+  const wa = await getWall(a.id);
+  const wb = await getWall(b.id);
+  assert.deepEqual(wa.streams.map((s) => s.label), ['Hindi Test Main']);
+  assert.deepEqual(wb.streams.map((s) => s.label), ['English Test Main']);
+  assert.equal(wb.session.timeZone, 'Asia/Kolkata');
+  assert.equal(wa.sessions.filter((s) => s.live).length, 2);
+  // Each session's wall has its own version: a save to one doesn't move the other's.
+  const va = (await json(`/api/wall?session=${a.id}`)).version;
+  assert.equal((await putWall({ ...wb, streams: [] }, b.id)).status, 200);
+  assert.equal((await json(`/api/wall?session=${a.id}`)).version, va);
+  const list = await json('/api/sessions');
+  assert.deepEqual(list.sessions.map((s) => [s.name, s.live, s.feeds]).sort(), [['BMSD Day 4', true, 0], ['Before sessions', false, 2], ['New session', true, 1]]);
+  assert.equal(list.current, b.id, 'the default is the live session started most recently');
+  assert.equal((await api('/', { redirect: 'manual' })).headers.get('location'), `/s/${b.id}`);
 });
 
-test('a page from before sessions can\'t put its old feeds back', async () => {
+test('archived: kept and deletable, not live; reopened: live again with its feeds; a live session can\'t be deleted', async () => {
+  const list = (await json('/api/sessions')).sessions;
+  const b = list.find((s) => s.name === 'BMSD Day 4');
+  const before = list.find((s) => s.name === 'Before sessions');
+  assert.equal((await post('/api/sessions/delete', { id: b.id })).status, 409, 'live: archive it first');
+  assert.equal((await post('/api/sessions/archive', { id: b.id })).status, 200);
+  assert.equal((await post('/api/sessions/archive', { id: b.id })).status, 409, 'already archived');
+  const wb = await getWall(b.id);
+  assert.equal(wb.session.live, false);
+  assert.ok(wb.session.endedAt);
+  assert.equal((await post('/api/sessions/reopen', { id: before.id })).status, 200);
+  const reopened = await getWall(before.id);
+  assert.equal(reopened.session.live, true);
+  assert.deepEqual(reopened.streams.map((s) => s.label), ['Hindi Test Main', 'English Test Main'], 'its feeds came back with it');
+  assert.equal((await post('/api/sessions/delete', { id: b.id })).status, 200);
+  assert.equal((await api(`/api/wall?session=${b.id}`)).status, 404);
+  assert.equal((await post('/api/sessions/delete', { id: 'nope' })).status, 409);
+});
+
+test('a page from before sessions can\'t save over a session', async () => {
   const current = await getWall();
-  const withSaved = { ...current, savedSessions: [{ id: 'old', name: 'BMSD Day 3', startedAt: null, endedAt: null, streams: OLD_FEEDS }] };
-  assert.equal((await putWall(withSaved)).status, 200);
-  // An old page sends only settings and its (old) feeds.
-  const res = await putWall({ settings: current.settings, streams: OLD_FEEDS.slice(0, 1) });
-  assert.equal(res.status, 409);
-  const wall = await getWall();
-  assert.equal(wall.session.name, 'Before sessions');
-  assert.equal(wall.streams.length, 2, 'the active session is untouched');
-  assert.deepEqual(wall.savedSessions.map((s) => s.name), ['BMSD Day 3']);
+  assert.equal((await putWall({ settings: current.settings, streams: OLD_FEEDS.slice(0, 1) })).status, 409);
+  assert.equal((await getWall()).streams.length, current.streams.length, 'untouched');
 });
 
-test('sessions keep their local time zone and stamps', async () => {
+test('renames and stamps are saved with the wall; a bad name or wall is rejected', async () => {
   const current = await getWall();
-  const stamped = { ...current, session: { ...current.session, startedAt: '2026-10-04T09:08:06.296Z', timeZone: 'Asia/Kolkata' } };
-  assert.equal((await putWall(stamped)).status, 200);
-  assert.equal((await getWall()).session.timeZone, 'Asia/Kolkata');
-  assert.equal((await putWall({ ...current, session: { ...current.session, timeZone: 'x'.repeat(65) } })).status, 400);
-});
-
-test('malformed sessions are rejected', async () => {
-  const current = await getWall();
-  assert.equal((await putWall({ ...current, session: { id: 1, name: 'x' } })).status, 400);
-  assert.equal((await putWall({ ...current, savedSessions: [{ id: 'a', name: 'x', streams: [{ id: 'bad' }] }] })).status, 400);
-  assert.equal((await putWall({ ...current, savedSessions: Array.from({ length: 51 }, (_, i) => ({ id: `s${i}`, name: 'x', streams: [] })) })).status, 400);
+  assert.equal((await putWall({ ...current, session: { ...current.session, name: 'Finals' } })).status, 200);
+  assert.equal((await getWall()).session.name, 'Finals');
+  assert.equal((await putWall({ ...current, session: { ...current.session, name: '' } })).status, 400);
+  assert.equal((await putWall({ ...current, session: { ...current.session, name: 'x'.repeat(81) } })).status, 400);
+  assert.equal((await putWall({ ...current, streams: [{ id: 'bad' }] })).status, 400);
+  assert.equal((await putWall({ ...current, settings: [] })).status, 400);
 });
 
 test('a feed keeps its own quality; anything but 480p, 720p or 1080p is rejected', async () => {

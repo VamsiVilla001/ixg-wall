@@ -15,10 +15,11 @@ const OAUTH_CLIENT_ID_FORMAT = /^[\w.-]{10,200}\.apps\.googleusercontent\.com$/;
 const OAUTH_SECRET_FORMAT = /^[\w-]{10,200}$/;
 
 class Secrets {
-  constructor({ envYtKey = '', envOauthClient = null, envSlack = null } = {}) {
+  constructor({ envYtKey = '', envOauthClient = null, envSlack = null, envMsClient = null } = {}) {
     this.envYtKey = String(envYtKey).trim();
     this.envOauthClient = envOauthClient?.clientId && envOauthClient?.clientSecret ? envOauthClient : null;
     this.envSlack = envSlack?.token && envSlack?.channelId ? envSlack : null;
+    this.envMsClient = envMsClient?.clientId && envMsClient?.clientSecret ? envMsClient : null;
     this.data = {};
     try {
       this.data = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {};
@@ -134,6 +135,61 @@ class Secrets {
     else delete this.data.slack;
     this.write();
     return true;
+  }
+
+  // ---- Where screenshots go (Settings → Source screenshots) ----
+  // layout: session-date-feed | session-feed | session-date | session; feedNames: short | full;
+  // folder: a base folder on this computer in place of the default ('' = default).
+  shots() {
+    return { layout: 'session-date-feed', feedNames: 'short', folder: '', ...(this.data.shots || {}) };
+  }
+
+  setShots(patch) {
+    this.data.shots = { ...this.shots(), ...patch };
+    this.write();
+  }
+
+  // Google Drive: a sign-in of its own (a refresh token with Drive access, from whichever
+  // Google account can edit the folder) and the folder: { refreshToken, email, folderId,
+  // folderName, folderUrl, savedAt, enabled }.
+  gdrive() {
+    return this.data.gdrive || null;
+  }
+
+  setGdrive(value) {
+    if (value) this.data.gdrive = value;
+    else delete this.data.gdrive;
+    this.write();
+  }
+
+  // OneDrive: the Microsoft app (client) the wall signs in with, from MS_CLIENT_ID/_SECRET or
+  // Settings, and the sign-in plus folder: { refreshToken, account, shareUrl, driveId, itemId,
+  // folderName, webUrl, savedAt, enabled }.
+  msClient() {
+    return this.envMsClient || this.data.msClient || null;
+  }
+
+  msClientInfo() {
+    const c = this.msClient();
+    return { set: !!c, source: this.envMsClient ? 'env' : c ? 'saved' : null, clientId: c?.clientId || '' };
+  }
+
+  setMsClient(client) {
+    if (this.envMsClient) return false;
+    if (client) this.data.msClient = { clientId: client.clientId, clientSecret: client.clientSecret };
+    else delete this.data.msClient;
+    this.write();
+    return true;
+  }
+
+  onedrive() {
+    return this.data.onedrive || null;
+  }
+
+  setOnedrive(value) {
+    if (value) this.data.onedrive = value;
+    else delete this.data.onedrive;
+    this.write();
   }
 
   expireChannelToken(channelId) {

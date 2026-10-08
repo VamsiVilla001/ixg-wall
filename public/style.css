@@ -342,6 +342,9 @@ code { font-family: var(--font-mono); }
   border-bottom: 1px solid var(--border);
 }
 .session-info { display: grid; gap: 2px; min-width: 0; }
+/* A session's actions (Open, New window, Archive / Reopen, Delete): one cell, wrapping as a group */
+.session-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; grid-column: 2 / span 2; }
+.session-row[data-current="1"] .session-row-name { color: var(--ixg-action, inherit); }
 .session-row-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-row-meta { font: 600 10px/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-foreground); }
 .session-row-feeds { font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1268,3 +1271,9 @@ strong, b { font-weight: 600; }
 .switch::after { border-radius: 1px; }
 .dialog::backdrop { background: rgb(7 5 14 / .72); }
 @media (max-width: 1100px) { .topbar { gap: 8px 12px; padding: 8px 16px; } }
+
+/* Settings: setup steps folded under a one-line hint */
+details.setup { margin-top: 2px; }
+details.setup summary { cursor: pointer; color: var(--muted-foreground); font-weight: 600; }
+details.setup summary:hover { color: var(--foreground); }
+details.setup[open] summary { margin-bottom: 4px; }
