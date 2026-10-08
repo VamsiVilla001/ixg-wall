@@ -385,6 +385,7 @@ function trusted(req) {
 async function login(req, res) {
   if (!auth.enabled) return sendJson(res, 200, { ok: true });
   if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+  if (!accounts.passwordAllowed()) return sendJson(res, 403, { error: 'The password sign-in is switched off: sign in with Microsoft.' });
   const addr = clientAddress(req);
   const wait = auth.lockedFor(addr);
   if (wait) {
@@ -424,7 +425,7 @@ async function join(req, res) {
   sendJson(res, 200, { ok: true, role, next: link.session ? `/s/${link.session}` : '/' }, { 'Set-Cookie': auth.sessionCookie(role, link.id, until) });
 }
 
-const adminOnly = (res) => sendJson(res, 403, { error: 'Only an admin can do this. Sign in with the wall password.' });
+const adminOnly = (res) => sendJson(res, 403, { error: 'Only an admin can do this. Sign in as an admin.' });
 
 async function handleApi(req, res, urlPath, session) {
   if (urlPath === '/api/login' && req.method === 'POST') return login(req, res);
@@ -434,7 +435,7 @@ async function handleApi(req, res, urlPath, session) {
   }
   // ---- Microsoft 365 sign-in: the sign-in page asks what's on offer, then goes round Microsoft ----
   if (urlPath === '/api/login/options' && req.method === 'GET') {
-    return sendJson(res, 200, { password: auth.enabled, microsoft: auth.enabled && accounts.enabled() });
+    return sendJson(res, 200, { password: auth.enabled && accounts.passwordAllowed(), microsoft: auth.enabled && accounts.enabled() });
   }
   if (urlPath === '/api/auth/microsoft/start' && req.method === 'GET') {
     if (!auth.enabled) return redirect(res, '/');
@@ -759,6 +760,13 @@ async function handleApi(req, res, urlPath, session) {
         }
       }
     }
+    return sendJson(res, 200, { access: accounts.info() });
+  }
+  if (urlPath === '/api/accounts/password' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 2000);
+    const { error } = accounts.setPasswordSignIn(body.on === true);
+    if (error) return sendJson(res, 400, { error, access: accounts.info() });
     return sendJson(res, 200, { access: accounts.info() });
   }
   // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations (admin) ----

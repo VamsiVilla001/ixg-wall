@@ -22,12 +22,18 @@
     .signin-card h1 { margin-top: 6px; font: 500 21px/1.25 var(--font-display); }
     .signin-card .btn { width: 100%; }
     .signin-card .hint { margin: 0; }
+    .signin-card .form:not([hidden]) { display: contents; }
     /* Admin / User: a two-way toggle, the selected side filled with ink */
     .role-toggle { display: grid; grid-template-columns: 1fr 1fr; padding: 2px; gap: 2px; border-radius: var(--radius-md); background: var(--secondary); box-shadow: inset 0 0 0 1px var(--border); }
     .role-toggle button { height: 30px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: 600 10.5px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
     .role-toggle button:hover { color: var(--foreground); }
     .role-toggle button[aria-checked="true"] { background: var(--foreground); color: var(--background); }
     .role-toggle button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+    /* The other ways in, under the main button: plain text links */
+    .ways { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: center; }
+    .ways button { padding: 0; border: 0; background: none; color: var(--muted-foreground); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+    .ways button:hover { color: var(--foreground); }
+    .ways button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
   </style>
 </head>
 <body>
@@ -37,22 +43,31 @@
         <div class="brand"><img class="brand-logo" src="/ixg-logo.svg" alt="IXG"><span class="brand-sub">Wall</span></div>
         <h1 id="title">Sign in to the wall</h1>
       </div>
-      <div class="role-toggle" role="radiogroup" aria-label="Sign in as">
-        <button type="button" role="radio" id="as-admin" aria-checked="true">Admin</button>
-        <button type="button" role="radio" id="as-user" aria-checked="false">User</button>
+      <!-- Microsoft 365: the main way in once the admin set it up -->
+      <a class="btn btn-accent" id="microsoft" href="/api/auth/microsoft/start" hidden>Sign in with Microsoft</a>
+      <!-- The wall password (an admin) or a user link -->
+      <div class="form" id="form" hidden>
+        <div class="role-toggle" role="radiogroup" aria-label="Sign in as" id="roles">
+          <button type="button" role="radio" id="as-admin" aria-checked="true">Admin</button>
+          <button type="button" role="radio" id="as-user" aria-checked="false">User</button>
+        </div>
+        <label class="field-stack" id="admin-field">
+          <span class="telemetry muted">Wall password</span>
+          <input class="input" id="password" type="password" name="password" autocomplete="current-password">
+        </label>
+        <label class="field-stack" id="user-field" hidden>
+          <span class="telemetry muted">Your user link</span>
+          <input class="input" id="link" type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#…">
+        </label>
+        <button class="btn btn-accent" type="submit" id="submit">Sign in</button>
       </div>
-      <label class="field-stack" id="admin-field">
-        <span class="telemetry muted">Wall password</span>
-        <input class="input" id="password" type="password" name="password" autocomplete="current-password" required autofocus>
-      </label>
-      <label class="field-stack" id="user-field" hidden>
-        <span class="telemetry muted">Your user link</span>
-        <input class="input" id="link" type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#…">
-      </label>
       <p class="form-error" id="error" role="alert" hidden></p>
-      <button class="btn btn-accent" type="submit" id="submit">Sign in</button>
-      <a class="btn btn-outline" id="microsoft" href="/api/auth/microsoft/start" hidden>Sign in with Microsoft</a>
       <p class="hint" id="hint"></p>
+      <div class="ways" id="ways" hidden>
+        <button type="button" id="use-password" hidden>Sign in with the wall password</button>
+        <button type="button" id="use-link" hidden>Use a user link</button>
+        <button type="button" id="use-microsoft" hidden>Sign in with Microsoft instead</button>
+      </div>
     </form>
   </main>
   <script>
@@ -63,33 +78,40 @@
       const params = new URLSearchParams(location.search);
       const raw = params.get('next') || '/';
       const next = /^\/(?![/\\])/.test(raw) ? raw : '/';
-      // Microsoft 365 sign-in, when the admin set it up; a refusal comes back here with the reason.
-      fetch('/api/login/options').then((r) => r.json()).then((o) => {
-        if (!o.microsoft) return;
-        $('microsoft').hidden = false;
-        $('microsoft').href = `/api/auth/microsoft/start?next=${encodeURIComponent(next)}`;
-      }).catch(() => {});
-      if (params.get('error')) {
-        $('error').textContent = params.get('error');
-        $('error').hidden = false;
-      }
       const HINTS = {
-        admin: 'Admins hold the wall password and manage the YouTube key, the channel sign-in and user links. This browser stays signed in for 30 days.',
+        microsoft: 'Use your organisation\'s Microsoft 365 account. Only accounts an admin has allowed get in, with the role set for them.',
+        admin: 'The wall password signs an admin in. This browser stays signed in for 30 days.',
         user: 'Open the link the wall\'s admin shared with you, or paste it here. No password needed.',
       };
+      // What's on offer, from the server: Microsoft once the admin set it up, the password
+      // unless the admin switched it off. Until the answer comes, the page shows nothing to
+      // choose, so the right way in appears first rather than after a flicker.
+      let offer = { password: true, microsoft: false };
+      let view = null; // 'microsoft' | 'admin' | 'user'
       let role = 'admin';
 
-      function setRole(r, focus = true) {
-        role = r;
-        $('as-admin').setAttribute('aria-checked', String(r === 'admin'));
-        $('as-user').setAttribute('aria-checked', String(r === 'user'));
-        $('admin-field').hidden = r !== 'admin';
-        $('user-field').hidden = r !== 'user';
-        $('password').required = r === 'admin';
-        $('link').required = r === 'user';
-        $('hint').textContent = HINTS[r];
+      function show(v, focus = true) {
+        view = v;
+        role = v === 'user' ? 'user' : 'admin';
+        const form = v !== 'microsoft';
+        $('microsoft').hidden = !(v === 'microsoft' && offer.microsoft);
+        $('form').hidden = !form;
+        // Both toggles only when both the password and a link are ways in.
+        $('roles').hidden = !(offer.password && offer.microsoft === false);
+        $('as-admin').setAttribute('aria-checked', String(role === 'admin'));
+        $('as-user').setAttribute('aria-checked', String(role === 'user'));
+        $('admin-field').hidden = role !== 'admin';
+        $('user-field').hidden = role !== 'user';
+        $('password').required = form && role === 'admin';
+        $('link').required = form && role === 'user';
+        $('hint').textContent = HINTS[v];
+        $('use-password').hidden = !(offer.microsoft && offer.password && v !== 'admin');
+        $('use-link').hidden = !(offer.microsoft && v !== 'user');
+        $('use-microsoft').hidden = !(offer.microsoft && v !== 'microsoft');
+        $('ways').hidden = [...$('ways').children].every((b) => b.hidden);
         clearError();
-        if (focus) (r === 'admin' ? $('password') : $('link')).focus();
+        if (focus && form) (role === 'admin' ? $('password') : $('link')).focus();
+        else if (focus && v === 'microsoft') $('microsoft').focus();
       }
 
       function clearError() {
@@ -98,13 +120,14 @@
         $('link').removeAttribute('aria-invalid');
       }
 
-      function fail(msg) {
-        const input = role === 'admin' ? $('password') : $('link');
+      function fail(msg, input = role === 'admin' ? $('password') : $('link')) {
         $('error').textContent = msg;
         $('error').hidden = false;
-        input.setAttribute('aria-invalid', 'true');
         $('submit').disabled = false;
-        input.select();
+        if (input && !input.closest('[hidden]')) {
+          input.setAttribute('aria-invalid', 'true');
+          input.select();
+        }
       }
 
       async function signIn() {
@@ -129,27 +152,42 @@
         }
       }
 
-      $('as-admin').addEventListener('click', () => setRole('admin'));
-      $('as-user').addEventListener('click', () => setRole('user'));
+      $('as-admin').addEventListener('click', () => show('admin'));
+      $('as-user').addEventListener('click', () => show('user'));
+      $('use-password').addEventListener('click', () => show('admin'));
+      $('use-link').addEventListener('click', () => show('user'));
+      $('use-microsoft').addEventListener('click', () => show('microsoft'));
       $('password').addEventListener('input', clearError);
       $('link').addEventListener('input', clearError);
       $('signin').addEventListener('submit', (e) => {
         e.preventDefault();
+        if (view === 'microsoft') return; // Enter on the Microsoft button follows the link itself
         signIn();
       });
 
-      // Opened from a user link (/join#token): sign in with it straight away, and take the
-      // token out of the address bar and history.
-      const token = location.hash.slice(1);
-      if (location.pathname === '/join' && token) {
-        history.replaceState(null, '', '/join');
-        setRole('user', false);
-        $('title').textContent = 'Opening the wall…';
-        $('link').value = token;
-        signIn().then(() => { $('title').textContent = 'Sign in to the wall'; });
-      } else {
-        setRole(location.pathname === '/join' ? 'user' : 'admin');
+      function start() {
+        $('microsoft').href = `/api/auth/microsoft/start?next=${encodeURIComponent(next)}`;
+        // Opened from a user link (/join#token): sign in with it straight away, and take the
+        // token out of the address bar and history.
+        const token = location.hash.slice(1);
+        if (location.pathname === '/join' && token) {
+          history.replaceState(null, '', '/join');
+          show('user', false);
+          $('title').textContent = 'Opening the wall…';
+          $('link').value = token;
+          signIn().then(() => { $('title').textContent = 'Sign in to the wall'; });
+        } else if (location.pathname === '/join') {
+          show('user');
+        } else {
+          show(offer.microsoft ? 'microsoft' : 'admin');
+        }
+        // A refusal from the Microsoft round trip comes back here with the reason.
+        if (params.get('error')) fail(params.get('error'), null);
       }
+
+      fetch('/api/login/options').then((r) => r.json()).then((o) => {
+        offer = { password: o.password !== false, microsoft: o.microsoft === true };
+      }).catch(() => {}).then(start);
     })();
   </script>
 </body>

@@ -6027,9 +6027,12 @@
     setText($('#access-tenant-label'), tenant ? `Everyone in ${tenant} may sign in as an operator` : 'Everyone in the organisation may sign in as an operator (noted from the first admin\'s Microsoft sign-in)');
     $('#access-tenant').checked = !!a.tenantOperators;
     $('#access-tenant').disabled = !a.tenantId;
+    // The password can go only once Microsoft gets an admin in.
+    $('#access-password').checked = a.passwordSignIn !== false;
+    $('#access-password').disabled = !a.enabled || !a.accounts.some((acc) => acc.role === 'admin');
     const listed = a.accounts.length;
-    let text = !a.enabled ? 'Microsoft sign-in is off until the Microsoft app is added (OneDrive, below).'
-      : `Microsoft sign-in is on: ${listed} account${listed === 1 ? '' : 's'} allowed${a.tenantOperators ? ', and everyone in the organisation as an operator' : ''}.`;
+    let text = !a.enabled ? 'Microsoft sign-in is off until the Microsoft app is added (OneDrive, below); the wall password signs admins in.'
+      : `Microsoft sign-in is on: ${listed} account${listed === 1 ? '' : 's'} allowed${a.tenantOperators ? ', and everyone in the organisation as an operator' : ''}${a.passwordSignIn === false ? '; the password is off' : ''}.`;
     let tone = a.enabled ? 'ok' : 'warn';
     if (accessNote) [text, tone] = [accessNote.text, accessNote.tone];
     setText($('#access-status'), text);
@@ -6108,6 +6111,16 @@
     const r = await accessAction('/api/accounts/tenant', { on: e.target.checked });
     accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
     renderAccess();
+  });
+  $('#access-password').addEventListener('change', async (e) => {
+    if (!e.target.checked) {
+      const ok = await ask({ title: 'Switch the password sign-in off?', body: 'From then on only Microsoft 365 accounts listed here get in. Make sure your own account is listed as an admin and has signed in once.', confirm: 'Switch off', variant: 'destructive' });
+      if (!ok) return renderAccess();
+    }
+    const r = await accessAction('/api/accounts/password', { on: e.target.checked });
+    accessNote = r.error ? { text: r.error, tone: 'bad' } : null;
+    renderAccess();
+    return undefined;
   });
 
   // ---- Where screenshots go: the folders, and the Google Drive and OneDrive destinations.

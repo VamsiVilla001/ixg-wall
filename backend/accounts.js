@@ -6,8 +6,9 @@
 // Web redirect URI: PUBLIC_URL/api/auth/microsoft/callback. Who gets in is an allow-list
 // kept in the Admin center: each email with a role (admin, operator or user); optionally
 // everyone in the organisation (the tenant) as an operator. IXG_ADMINS seeds admins so the
-// first one can sign in before anyone is listed. The password sign-in stays, as the way in
-// when Microsoft or the app is unavailable.
+// first one can sign in before anyone is listed. Microsoft is the main way in; the password
+// is a fallback an admin can switch off (Access → password sign-in) once an admin account is
+// listed, and it comes back by itself should the Microsoft app be removed.
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { MS } = require('./onedrive');
@@ -44,6 +45,24 @@ class Accounts extends EventEmitter {
   // Whether "Sign in with Microsoft" can be offered: the Microsoft app is set up.
   enabled() {
     return !!this.secrets.msClient();
+  }
+
+  // Whether the wall password still signs anyone in: always while Microsoft sign-in isn't
+  // available (nothing else would get an admin in), otherwise unless switched off.
+  passwordAllowed() {
+    return !this.enabled() || this.secrets.access().passwordSignIn !== false;
+  }
+
+  // Switching the password off needs another way in for an admin: Microsoft sign-in, and
+  // an admin account listed for it.
+  setPasswordSignIn(on) {
+    if (!on) {
+      if (!this.enabled()) return { error: 'Microsoft sign-in isn\'t set up yet: the password is the only way in.' };
+      if (!this.list().some((a) => a.role === 'admin')) return { error: 'Allow an admin account first, so an admin can still sign in with Microsoft.' };
+    }
+    this.secrets.setAccess({ passwordSignIn: !!on });
+    this.emit('change');
+    return {};
   }
 
   // Everyone who may sign in, newest first; env admins first and unremovable.
@@ -107,6 +126,7 @@ class Accounts extends EventEmitter {
     const access = this.secrets.access();
     return {
       enabled: this.enabled(),
+      passwordSignIn: this.passwordAllowed(),
       redirectUri: this.redirectUri,
       accounts: this.list(),
       tenantOperators: access.tenantOperators,

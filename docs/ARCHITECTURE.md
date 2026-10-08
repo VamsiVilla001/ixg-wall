@@ -5,7 +5,7 @@ IXG Wall monitors 20–30 YouTube live feeds for BGMI esports broadcasts. Its jo
 | | Laptop (default) | Hosted (`IXG_HOSTED=1`) |
 |---|---|---|
 | Started by | `Start IXG Wall.cmd`, `npm run wall` | systemd on a Linux server (DEPLOY.md) |
-| Sign-in | none (everyone is an admin) | admin: the wall password · user: a link an admin generated; 30-day session cookie |
+| Sign-in | none (everyone is an admin) | Microsoft 365 account from the allow-list (the main way in, once the Microsoft app is set) · the wall password (admin; a fallback that can be switched off) · a link an admin generated (operator or user); 30-day session cookie |
 | Managed wall window | yes (Chrome/Edge app window, software decode) | no |
 | Laptop telemetry (CPU, memory, network, GPU) | yes | no: the server isn't the screen |
 | Data folder | `%LOCALAPPDATA%\IXG Wall` | `IXG_DATA_DIR`, e.g. `/var/lib/ixg-wall` |
@@ -190,12 +190,15 @@ YouTube embed limits, measured on the wall laptops:
 
 Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` header and a same-site `Origin`.
 
-**Roles.** A password sign-in is an admin; a link is an operator or a user (the link's role). Without a password, every request is an admin's. The Admin center (`/admin`, the same page in a mode that shows only the `[data-admin-center]` sections and no wall) is served to admins alone; the integrations, links and screenshot destinations live there and never show on the wall. An operator (`canOperate`) adds feeds, runs sessions, changes screenshot settings and takes screenshots; a user does none of those. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
+**Roles.** A Microsoft 365 sign-in gets the role listed for the account (`accounts.js`; the sign-in page leads with it, and `GET /api/login/options` tells the page what is on offer); a password sign-in is an admin, refused by `/api/login` once an admin switches the password off (`POST /api/accounts/password`, allowed only with Microsoft sign-in set and an admin account listed, and the password comes back by itself if the Microsoft app goes); a link is an operator or a user (the link's role). Without a password, every request is an admin's. The Admin center (`/admin`, the same page in a mode that shows only the `[data-admin-center]` sections and no wall) is served to admins alone; the integrations, links and screenshot destinations live there and never show on the wall. An operator (`canOperate`) adds feeds, runs sessions, changes screenshot settings and takes screenshots; a user does none of those. Users are refused (403) by `handleApi` on `/api/youtube/key`, `/api/youtube/oauth/*`, `/api/links*` and `/api/wall-browser`. Their YouTube state (`youtubeFor()`, on `/api/youtube` and the event stream) carries the numbers and each feed's ingest, but no key info beyond `{ set }`, no OAuth client, channels or redirect address, and no Google error text. A user's wall save keeps the admin's `ytPollSec`, `memLimitMB` and `offloadEveryMin`. Revoking a link ends its sessions on their next request and closes their event streams. The page hides `[data-admin-only]` for users, but that is only tidiness: the server enforces all of it.
 
 | Method & path | What |
 |---|---|
 | `GET /healthz` | `{ ok: true }`, no sign-in; for load balancers and `update.sh` |
-| `POST /api/login` · `POST /api/logout` | sign in as an admin (`{ password }`) / out |
+| `GET /api/login/options` | no sign-in: `{ password, microsoft }`, what the sign-in page may offer |
+| `GET /api/auth/microsoft/start?next=` · `GET /api/auth/microsoft/callback` | the Microsoft 365 round trip; a refusal lands on `/login?error=` with the reason |
+| `POST /api/login` · `POST /api/logout` | sign in as an admin (`{ password }`; 403 once the password is switched off) / out |
+| `GET /api/accounts` · `POST /api/accounts` · `POST /api/accounts/remove` · `POST /api/accounts/tenant` · `POST /api/accounts/password` | admins: the allow-list; add or re-role `{ email, role }`; remove `{ id }`; everyone in the organisation as operators `{ on }`; the password fallback `{ on }` |
 | `GET /join#token` · `POST /api/join` | a user link: the page posts `{ link }` and gets a user session. The token is after the `#`, so it never reaches server logs |
 | `GET /api/links` · `POST /api/links` · `POST /api/links/revoke` | admins: list (with each link's address), generate `{ name, days }` (0 = until revoked), revoke `{ id }` |
 | `GET /api/config` | `{ hosted, auth, role, linkName, ytKey }`: the page adapts its UI to this |

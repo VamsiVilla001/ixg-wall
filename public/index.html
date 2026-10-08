@@ -265,7 +265,11 @@
           <span id="access-tenant-label">Everyone in the organisation may sign in as an operator</span>
         </label>
         <ul class="session-list" id="access-list" aria-label="Allowed accounts"></ul>
-        <p class="hint">Whoever signs in with a listed Microsoft 365 account gets its role; anyone else is refused. The password sign-in stays as the fallback.</p>
+        <label class="switch-row">
+          <input class="switch" type="checkbox" role="switch" id="access-password">
+          <span>The wall password also signs admins in (a fallback beside Microsoft)</span>
+        </label>
+        <p class="hint">Whoever signs in with a listed Microsoft 365 account gets its role; anyone else is refused. Microsoft leads the sign-in page; the password can be switched off once an admin account is listed.</p>
         <details class="hint setup"><summary>Setup</summary>Uses the Microsoft app from OneDrive below. In that app registration, under Authentication, add a second Web redirect URI: <code id="access-redirect"></code>. Removing an account, or changing its role, takes effect on its next request.</details>
       </section>
       <section class="sheet-section" id="links-settings" data-admin-only data-admin-center hidden>

@@ -150,8 +150,9 @@ class Secrets {
 
   // tenantOperators: whether every account in the organisation (tenantId, noted from the
   // first admin's Microsoft sign-in) may sign in as an operator without being listed.
+  // passwordSignIn: whether the wall password still signs admins in beside Microsoft.
   access() {
-    return { tenantOperators: false, tenantId: '', tenantName: '', ...(this.data.access || {}) };
+    return { tenantOperators: false, tenantId: '', tenantName: '', passwordSignIn: true, ...(this.data.access || {}) };
   }
 
   setAccess(patch) {

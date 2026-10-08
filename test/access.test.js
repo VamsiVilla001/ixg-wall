@@ -157,7 +157,28 @@ test('the organisation switch lets its own accounts in as operators, and no one 
   assert.match(decodeURIComponent(out.location), /isn't allowed in/);
   assert.equal((await boss.as('/api/accounts/tenant', { method: 'POST', body: JSON.stringify({ on: false }) })).status, 200);
   assert.equal((await tina.as('/api/config')).status, 401, 'switch off: signed out');
-  // The password sign-in is still there, and a user link still works as before.
+  // The password sign-in is still there, as the fallback.
   const pw = await fetch(`${wall.base}/api/login`, { method: 'POST', headers: { 'X-IXG-Wall': '1', Origin: 'https://wall.example.com' }, body: JSON.stringify({ password: PASSWORD }) });
   assert.equal(pw.status, 200);
+});
+
+test('Microsoft is the main sign-in: an admin can switch the password off, and the sign-in page stops offering it', async () => {
+  const boss = await signIn('code-boss');
+  const password = () => fetch(`${wall.base}/api/login`, { method: 'POST', headers: { 'X-IXG-Wall': '1', Origin: 'https://wall.example.com' }, body: JSON.stringify({ password: PASSWORD }) });
+  const options = async () => (await fetch(`${wall.base}/api/login/options`)).json();
+  assert.equal((await (await boss.as('/api/accounts')).json()).access.passwordSignIn, true, 'on to begin with');
+  assert.equal((await boss.as('/api/accounts/password', { method: 'POST', body: JSON.stringify({ on: false }) })).status, 200);
+  assert.deepEqual(await options(), { password: false, microsoft: true });
+  assert.equal((await (await boss.as('/api/accounts')).json()).access.passwordSignIn, false);
+  const refused = await password();
+  assert.equal(refused.status, 403);
+  assert.match((await refused.json()).error, /sign in with Microsoft/);
+  assert.ok((await signIn('code-boss')).cookie, 'Microsoft still gets the admin in');
+  assert.equal((await boss.as('/api/accounts/password', { method: 'POST', body: JSON.stringify({ on: true }) })).status, 200);
+  assert.deepEqual(await options(), { password: true, microsoft: true });
+  assert.equal((await password()).status, 200, 'back on');
+  // The page (login.html) leads with Microsoft and keeps the password behind "other ways".
+  const page = await (await fetch(`${wall.base}/login`)).text();
+  assert.ok(page.indexOf('id="microsoft"') < page.indexOf('id="form"'), 'the Microsoft button comes first');
+  assert.match(page, /id="use-password"/);
 });
