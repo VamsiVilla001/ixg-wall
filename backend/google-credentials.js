@@ -16,8 +16,12 @@ const GOOGLE = {
   TOKEN_URL: process.env.IXG_GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token',
   REVOKE_URL: process.env.IXG_GOOGLE_REVOKE_URL || 'https://oauth2.googleapis.com/revoke',
   API: process.env.IXG_YOUTUBE_API || 'https://www.googleapis.com/youtube/v3',
+  ANALYTICS_API: process.env.IXG_YOUTUBE_ANALYTICS_API || 'https://youtubeanalytics.googleapis.com/v2',
 };
-const SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+// Read-only: the channel's broadcasts and streams (ingest health), and its YouTube Analytics
+// (the per-minute audience behind Studio's live graph, youtube-studio.js).
+const ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly';
+const SCOPE = `https://www.googleapis.com/auth/youtube.readonly ${ANALYTICS_SCOPE}`;
 const STATE_TTL_MS = 10 * 60000;   // a sign-in must finish within this
 const CHECK_TIMEOUT_MS = 10000;
 
@@ -215,9 +219,17 @@ class GoogleCredentials extends EventEmitter {
   }
 
   // ---- Channel sign-ins ----------------------------------------------------------------
-  // Every channel signed in with the client: [{ id, title, savedAt, expired }]. No tokens.
+  // Every channel signed in with the client: [{ id, title, savedAt, expired, analytics }].
+  // analytics: whether the sign-in allowed YouTube Analytics; null for a sign-in from before
+  // the wall asked, which may still turn out to work. No tokens.
   channels() {
-    return this.secrets.channelTokens().map((t) => ({ id: t.channelId, title: t.channelTitle, savedAt: t.savedAt, expired: !t.refreshToken }));
+    return this.secrets.channelTokens().map((t) => ({
+      id: t.channelId,
+      title: t.channelTitle,
+      savedAt: t.savedAt,
+      expired: !t.refreshToken,
+      analytics: typeof t.scopes === 'string' ? t.scopes.split(' ').includes(ANALYTICS_SCOPE) : null,
+    }));
   }
 
   authUrlFor(client, state) {
@@ -268,6 +280,7 @@ class GoogleCredentials extends EventEmitter {
       channelId: channel.id,
       channelTitle: channel.snippet?.title || channel.id,
       savedAt: new Date().toISOString(),
+      scopes: tokens.scope || SCOPE, // what the account allowed: it can untick Analytics
     });
     this.emit('change');
     return channel.snippet?.title || channel.id;

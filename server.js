@@ -15,10 +15,14 @@ const { GoogleCredentials } = require('./backend/google-credentials');
 const { IngestHealth } = require('./backend/youtube-ingest');
 const feedMeter = require('./backend/extension');
 const { Telemetry } = require('./backend/telemetry');
-const { WallBrowser, DECODE_MODES, PROFILE_DIR } = require('./backend/wall-browser');
+const { WallBrowser, DECODE_MODES, PROFILE_DIR, findBrowser } = require('./backend/wall-browser');
 const { WallStore } = require('./backend/wall-store');
 const { YouTubeStats } = require('./backend/youtube');
-const { AutoCapture } = require('./backend/auto-capture');
+const { StudioAudience } = require('./backend/youtube-studio');
+const { PcvTracker } = require('./backend/pcv');
+const { AutoCapture, BACKEND } = require('./backend/auto-capture');
+const { SourceCapture, readableName, sessionFolder } = require('./backend/source-capture');
+const { SlackPoster } = require('./backend/slack');
 const { readAsset } = require('./backend/assets');
 
 const { PORT, HOST, HOSTED, PUBLIC_URL } = config;
@@ -68,18 +72,31 @@ const SECURITY_HEADERS = {
 };
 
 const wallStore = new WallStore();
-const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: config.GOOGLE_OAUTH_CLIENT });
+const secrets = new Secrets({ envYtKey: config.YOUTUBE_API_KEY, envOauthClient: config.GOOGLE_OAUTH_CLIENT, envSlack: config.SLACK });
+// Where screenshots are posted: anyone's Slack app, checked with Slack before it's saved.
+const slack = new SlackPoster({ secrets });
 const userLinks = new UserLinks(secrets);
-const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, linkActive: (id) => userLinks.active(id) });
+const auth = new Auth({ password: config.PASSWORD, secret: secrets.sessionSecret, secure: config.SECURE_COOKIES, port: new URL(PUBLIC_URL).port, linkActive: (id) => userLinks.active(id) });
 const telemetry = new Telemetry({ intervalMs: 2000, hosted: HOSTED, wallProfile: HOSTED ? '' : PROFILE_DIR });
 const wallBrowser = HOSTED ? null : new WallBrowser({ url: `http://localhost:${PORT}/` });
 // Anyone's YouTube key and Google OAuth client, checked with Google before they're saved.
 const credentials = new GoogleCredentials({ secrets, publicUrl: PUBLIC_URL, port: PORT });
-const youtube = new YouTubeStats({ wallStore, credentials });
+// Each broadcast's peak concurrent viewers: sampled at every poll, Studio's kept apart (pcv.json).
+const pcv = new PcvTracker();
+const youtube = new YouTubeStats({ wallStore, credentials, pcv });
 const ingest = new IngestHealth({ credentials, wallStore, pollMs: () => youtube.pollMs() });
 youtube.ingest = ingest; // its state rides along with the YouTube numbers
-// Automatic source screenshots: decided here, taken by an admin's page with the Feed Meter.
-const autoCapture = new AutoCapture({ youtube, ingest, wallStore });
+// YouTube Studio's per-minute audience and PCV for feeds a signed-in channel owns.
+const studio = new StudioAudience({ credentials, ingest, pcv });
+youtube.studio = studio;
+ingest.studio = studio;
+// Automatic source screenshots at each new PCV and at a stream's end: decided here.
+const autoCapture = new AutoCapture({ youtube, pcv, ingest, wallStore });
+// The backend takes them itself, in a headless browser: no window pops up and focus never
+// moves (backend/source-capture.js). On a server that needs Chrome installed (DEPLOY.md);
+// without one, admins' pages with the Feed Meter take them instead.
+const sourceCapture = process.env.IXG_SERVER_CAPTURE === '0' ? null : new SourceCapture({ browserPath: findBrowser(), hosted: HOSTED });
+autoCapture.backendTakes = !!sourceCapture?.available();
 const sseClients = new Map(); // response -> { role, linkId } of whoever opened it
 const browserStatus = () => (wallBrowser ? wallBrowser.status() : { supported: false, hosted: true });
 
@@ -143,16 +160,89 @@ function broadcastYoutube() {
 youtube.on('update', () => {
   autoCapture.check();
   broadcastYoutube();
+  takeAutoCaptures();
 });
 ingest.on('update', () => {
   autoCapture.check();
   broadcastYoutube();
+  takeAutoCaptures();
+  studio.wallChanged(); // owners and go-live times may be new
 });
+studio.on('update', broadcastYoutube);
 autoCapture.on('change', broadcastYoutube);
+
+// What a saved screenshot shows, for the record: the file, then account · LIVE · the count.
+function shotDetail({ file, facts = {} }) {
+  const what = [facts.account, facts.live ? 'LIVE' : '', facts.ccv ? `${facts.ccv} watching` : facts.views ? `${facts.views} views` : 'CCV not shown'].filter(Boolean).join(' · ');
+  return `${file}${what ? ` (${what})` : ''}`;
+}
+
+// The message a screenshot goes to Slack with. A new PCV says it's the wall's sampled figure;
+// at the end, Studio's official PCV comes first when the channel's sign-in has it.
+function slackComment(kind, id, shot, name, shotPcv) {
+  const n = (v) => Number(v).toLocaleString('en-US');
+  const at = (ms) => new Date(ms).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  const r = pcv.get(id);
+  const f = shot.facts || {};
+  const page = f.ccv ? `${f.ccv} watching` : f.views ? `${f.views} views` : 'no count shown';
+  const lines = [`*${name.replace(/\.png$/, '')}*`];
+  if (kind === 'peak') {
+    // The PCV this screenshot was taken for (a higher one may have been read since).
+    const when = r?.peak === shotPcv && r?.peakAt ? ` at ${at(r.peakAt)}` : '';
+    lines.push(`New PCV *${n(shotPcv)}*${when}: sampled by IXG Wall from the YouTube Data API every ${Math.round(youtube.pollMs() / 1000)} s (not YouTube Studio's figure). YouTube's page showed ${page} when this was taken.`);
+  } else if (kind === 'end') {
+    const official = r?.official ? `PCV *${n(r.official.peak)}* (YouTube Studio, official) · ` : '';
+    lines.push(`Stream ended. ${official}PCV ${n(r?.peak)} sampled by IXG Wall${r?.peakAt ? ` at ${at(r.peakAt)}` : ''}. YouTube's page showed ${page}.`);
+  } else {
+    lines.push(`Screenshot taken on request: YouTube's page showed ${page}.`);
+  }
+  lines.push(`${f.account || ''} · https://youtu.be/${id}`.replace(/^ · /, ''));
+  return lines.join('\n');
+}
+
+// Each screenshot goes to Slack once it's saved, when Slack is set up; the record says how it went.
+function toSlack(kind, id, shot, shotPcv = null) {
+  if (!slack.configured()) return;
+  const name = path.basename(shot.file);
+  autoCapture.note(id, `Screenshot posting to Slack: ${name}`, 'info', BACKEND);
+  broadcastYoutube();
+  slack.post({ file: shot.file, title: name.replace(/\.png$/, ''), comment: slackComment(kind, id, shot, name, shotPcv) }).then((r) => {
+    autoCapture.note(id, r.ok ? `Screenshot posted to Slack: ${name}` : `Screenshot not posted to Slack: ${r.error}`, r.ok ? 'info' : 'bad', BACKEND);
+    broadcastYoutube();
+  });
+}
+
+// Automatic screenshots, taken by the backend one at a time. A browser or network hiccup is
+// tried again (after a pause); a source that's the problem (unavailable, no player) isn't.
+const SHOT_RETRY = new Set(['browser', 'load']);
+const SHOT_RETRY_PAUSE_MS = 30000;
+let backendShooting = false;
+async function takeAutoCaptures() {
+  if (!autoCapture.backendTakes || backendShooting) return;
+  const next = autoCapture.open(BACKEND)[0];
+  const job = next && autoCapture.claim(next.job, BACKEND);
+  if (!job) return;
+  backendShooting = true;
+  let pause = 0;
+  try {
+    const name = (facts) => readableName({ label: autoCapture.label(job.id), facts, kind: job.reason, pcv: job.ccv });
+    const shot = await sourceCapture.capture({ videoId: job.id, name, subfolder: sessionFolder(wallStore.wall?.session?.name) });
+    autoCapture.finish(job.job, { outcome: 'saved', detail: `${shotDetail(shot)}${shot.note ? ` · ${shot.note}` : ''}`, client: BACKEND });
+    toSlack(job.reason, job.id, shot, job.ccv);
+  } catch (err) {
+    const retry = SHOT_RETRY.has(err.reason);
+    if (retry) pause = SHOT_RETRY_PAUSE_MS;
+    autoCapture.finish(job.job, { retry, outcome: 'failed', detail: err.message, client: BACKEND });
+  } finally {
+    backendShooting = false;
+    setTimeout(takeAutoCaptures, pause);
+  }
+}
 ingest.on('quiet', () => youtube.pollSoon()); // an encoder stopped: has YouTube ended the broadcast?
 credentials.on('key', () => youtube.keyChanged());
 credentials.on('change', () => {
   ingest.channelsChanged();
+  studio.channelsChanged();
   broadcastYoutube();
 });
 credentials.on('checked', broadcastYoutube);
@@ -239,7 +329,7 @@ async function handleApi(req, res, urlPath, session) {
   // Integrations and the wall computer: an admin's alone. Checked here, so a user can't
   // reach them by calling the API directly, whatever their page shows.
   if (!admin && (urlPath.startsWith('/api/youtube/key') || urlPath.startsWith('/api/youtube/oauth/')
-    || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser')) {
+    || urlPath.startsWith('/api/links') || urlPath === '/api/wall-browser' || urlPath.startsWith('/api/slack'))) {
     return adminOnly(res);
   }
   // A link made without YouTube gets none of its data, the audience history included.
@@ -256,6 +346,10 @@ async function handleApi(req, res, urlPath, session) {
       linkName: link?.name || null,
       ytKey: admin ? credentials.keyInfo() : { set: credentials.keyInfo().set && link?.youtube !== false },
       linkYoutube: admin ? null : link?.youtube !== false, // false: the admin made this link without YouTube data
+      // Source screenshots are taken by this backend, in the background, not by the page's Feed Meter.
+      backendCapture: admin && autoCapture.backendTakes,
+      // Where they're posted: never the token itself.
+      slack: admin ? slack.info() : null,
       // The Feed Meter extension: what the page checks for, and where to get it.
       extension: feedMeter.info({ extraIds: config.EXTENSION_IDS, storeUrl: config.EXTENSION_STORE_URL }),
     });
@@ -394,6 +488,36 @@ async function handleApi(req, res, urlPath, session) {
       return claimed ? sendJson(res, 200, claimed) : sendJson(res, 409, { error: 'Taken by another window, or no longer due' });
     }
     return sendJson(res, 200, { ok: autoCapture.finish(job, { retry: body.retry === true, busy: body.busy === true, outcome: String(body.outcome || ''), detail: String(body.detail || ''), client }) });
+  }
+  // ---- Capture source screenshot (the button), taken by this backend in the background ----
+  if (urlPath === '/api/capture/now' && req.method === 'POST') {
+    if (!admin) return adminOnly(res);
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    if (!autoCapture.backendTakes) return sendJson(res, 404, { error: 'This wall takes screenshots with the Feed Meter in the browser.' });
+    const body = await readBody(req, 2000);
+    const id = String(body.id || '');
+    if (!/^[\w-]{11}$/.test(id)) return sendJson(res, 400, { ok: false, reason: 'no-source', message: 'Source URL unavailable for this feed' });
+    const queued = sourceCapture.waiting;
+    try {
+      const name = (facts) => readableName({ label: autoCapture.label(id), facts, kind: 'manual' });
+      const shot = await sourceCapture.capture({ videoId: id, name, subfolder: sessionFolder(wallStore.wall?.session?.name) });
+      toSlack('manual', id, shot);
+      return sendJson(res, 200, { ok: true, file: shot.file, facts: shot.facts, note: shot.note, detail: shotDetail(shot), queued, slack: slack.configured() });
+    } catch (err) {
+      return sendJson(res, 200, { ok: false, reason: err.reason || 'failed', message: err.reason ? err.message : `Screenshot capture failed: ${err.message}`, queued });
+    }
+  }
+  // ---- Slack: where screenshots are posted (admin) ----
+  if (urlPath === '/api/slack' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const body = await readBody(req, 4000);
+    const result = await slack.save({ token: body.token, channel: body.channel });
+    return sendJson(res, result.status, { slack: slack.info(), check: result.check || null, error: result.error });
+  }
+  if (urlPath === '/api/slack/test' && req.method === 'POST') {
+    if (!trusted(req)) return sendJson(res, 403, { error: 'Forbidden' });
+    const result = await slack.test();
+    return sendJson(res, 200, { ...result, slack: slack.info() });
   }
   if (urlPath === '/api/status' && req.method === 'GET') {
     return sendJson(res, 200, { telemetry: telemetry.latest, browser: browserStatus() });
@@ -545,6 +669,7 @@ server.listen(PORT, HOST, () => {
   credentials.start();
   youtube.start();
   ingest.start();
+  studio.start();
   if (OPEN) {
     // Give an adopted wall window a moment to be recognised before launching a new one.
     setTimeout(() => wallBrowser.launch()
@@ -559,6 +684,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
     telemetry.stop();
     ingest.stop();
+    studio.stop();
     youtube.stop(); // writes the audience history so a restart keeps it
     process.exit(0);
   });

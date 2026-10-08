@@ -27,8 +27,8 @@
     memLimitMB: 500,           // managed wall window's tab over this: offload memory (0 = off)
     offloadEveryMin: 60,       // where memory can't be measured, offload this often (0 = off)
     timelineSpanMin: 15,       // how much of each stream the timelines show (0 = all YouTube keeps)
-    autoCapture: true,         // source screenshots at each feed's CCV peaks and when it ends (Feed Meter)
-    autoCaptureMin: 2,         // at most one CCV-peak screenshot per feed this often (2 or 4 in Settings)
+    autoCapture: true,         // source screenshots at each feed's new PCV and when it ends
+    autoCaptureMin: 2,         // at most one new-PCV screenshot per feed this often (2 or 4 in Settings)
   };
   const LIMITS = {
     checkIntervalSec: [1, 30],
@@ -426,6 +426,7 @@
     $('#links-off').hidden = server.auth;
     if (server.auth && isAdmin()) loadLinks();
     setText($('#perf-title'), server.hosted ? 'This computer & rendering' : 'Laptop & rendering');
+    renderSlack();
   }
 
   const clientId = uid();
@@ -2108,12 +2109,17 @@
       setTone(p.trend, pct > 0 ? 'ok' : pct < 0 ? 'bad' : '');
       p.trend.title = pct == null ? '' : `Change in viewers over the last ${a.trendMins} min`;
 
-      setText(p.peak, fmtCount(a.peak));
-      p.peak.title = a.peak != null ? `Peak ${fmtInt(a.peak)} at ${clockTime(a.peakAt)}, since tracking began` : 'No viewer counts recorded yet';
-      // No viewer counts behind it (an ended or hidden-count stream): Peak gives up its space.
+      // PCV: the broadcast's sampled peak (backend/pcv.js), the same figure as its Stats sheet
+      // and screenshots; YouTube Studio's official one, when the channel's sign-in has it, in the tip.
+      const pcv = yt?.pcv;
+      setText(p.peak, fmtCount(pcv?.peak ?? null));
+      p.peak.title = pcv?.peak != null
+        ? `PCV ${fmtInt(pcv.peak)} at ${clockTime(pcv.peakAt)}: the highest watching-now count read in this broadcast, sampled at each YouTube refresh${pcv.official ? ` · YouTube Studio's official PCV ${fmtInt(pcv.official.peak)}` : ''}`
+        : pcv?.status === 'waiting' ? 'Waiting for live data' : 'No viewer counts recorded yet';
+      // No peak behind it yet (not live, or a hidden count): PCV gives up its space.
       const peakCell = p.peak.closest('.m');
-      if (peakCell.hasAttribute('data-empty') !== (a.peak == null)) {
-        peakCell.toggleAttribute('data-empty', a.peak == null);
+      if (peakCell.hasAttribute('data-empty') !== (pcv?.peak == null)) {
+        peakCell.toggleAttribute('data-empty', pcv?.peak == null);
         this.trimSide();
       }
       setText(p.likes, yt?.likes != null ? fmtCount(yt.likes) : yt ? 'Hidden' : '—');
@@ -2638,7 +2644,8 @@
   }
 
   // YouTube analytics for one feed: what YouTube reports now, plus the backend's audience
-  // history (peak, average, lowest, trend, growth per hour) since it started tracking.
+  // history (peak, average, lowest, trend, growth per hour) since it started tracking, or
+  // since the broadcast went live where the owning channel's Studio audience is read.
   function renderAnalytics(t, now) {
     const id = t.stream.source.id;
     const ytEntry = ytStats.get(id);
@@ -2653,10 +2660,18 @@
     const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const rate = (v) => (v == null ? '' : ` · ${v >= 0 ? '+' : '−'}${fmtCount(Math.abs(v))}/h`);
     const trend = a.trendPct == null ? '' : ` · ${a.trendPct > 0 ? '+' : a.trendPct < 0 ? '−' : '±'}${Math.abs(a.trendPct)}% in ${a.trendMins} min`;
+    // PCV (backend/pcv.js): the wall's sampled peak and YouTube Studio's official one, never mixed.
+    const p = yt?.pcv;
+    const owned = !!ytState?.ingest?.videos?.[id]?.owned;
+    const status = !p ? null : p.status === 'waiting' ? 'Waiting for live data' : p.status === 'live' ? 'Live'
+      : p.status === 'ended' ? `Ended${p.endedAt ? ` ${time(p.endedAt)}` : ''}` : 'Not a live stream';
     fillKv($('#fs-audience'), hasKey ? [
       [audience.label, audience.value != null ? `${fmtInt(audience.value)}${ended ? '' : trend}`
         : ended ? 'Not reported' : yt?.broadcast === 'live' ? 'Hidden or 0: YouTube leaves it out' : null],
-      ['Peak', a.peak != null ? `${fmtInt(a.peak)} at ${time(a.peakAt)}` : null],
+      ['PCV · sampled', p?.peak != null ? `${fmtInt(p.peak)} at ${time(p.peakAt)}` : p?.status === 'waiting' ? 'Waiting for live data' : null],
+      ['PCV · YouTube Studio', p?.official ? `${fmtInt(p.official.peak)} · official, as of ${time(p.official.at)}` : owned ? 'Not reported yet' : null],
+      ['Last update', p?.lastUpdated ? `${time(p.lastUpdated)} · ${fmtDuration(Math.max(0, now - p.lastUpdated))} ago` : null],
+      ['Stream status', status],
       ['Average', fmtInt(a.avg)],
       ['Lowest', fmtInt(a.low)],
       ['Likes', yt?.likes != null ? `${fmtInt(yt.likes)}${rate(a.likesPerHour)}` : null],
@@ -2671,7 +2686,8 @@
       ['Definition', yt?.definition ? yt.definition.toUpperCase() : null],
       ['Live chat', yt?.chat == null ? null : yt.chat ? 'On' : 'Off'],
       ['Recording length', yt?.lengthSec ? fmtClock(yt.lengthSec) : null],
-      ['Tracked since', a.trackedSince ? `${time(a.trackedSince)} · ${a.samples} readings` : null],
+      ['Studio audience', a.studioFrom ? `${time(a.studioFrom)}–${time(a.studioUntil)} · per minute, from YouTube Analytics` : null],
+      ['Tracked since', a.trackedSince ? `${time(a.trackedSince)} · ${a.readings ?? a.samples} readings` : null],
     ] : []);
 
     const series = viewerSeries.id === id ? viewerSeries.series : [];
@@ -2682,9 +2698,9 @@
     setText($('#fs-aud-hint'), !hasKey
       ? isAdmin() ? 'Paste a YouTube Data API key to see live viewers, likes, views and comments for every feed, with peak, average and trend. Without one nothing here is shown; nothing is guessed.'
         : server.linkYoutube === false ? 'Your link was made without YouTube numbers: the wall\'s admin can make one that ships them. Nothing here is guessed.' : 'YouTube numbers aren\'t set up on this wall: the wall\'s admin can turn them on. Nothing here is guessed.'
-      : ytState?.status === 'error' ? `YouTube Data API: ${ytState.error}`
+      : ytState?.status === 'error' ? `YouTube Data API: ${ytState.error}${ytState.retryAt ? ` · trying again in ${fmtDuration(Math.max(0, ytState.retryAt - now))}` : ''}. The numbers below are the last ones read; the PCV is kept.`
         : ytEntry?.missing ? 'YouTube returned nothing for this ID: the video is deleted, private or mistyped.'
-          : yt ? `Reported by YouTube · updated ${fmtDuration(now - ytStatsAt)} ago · polled once a minute by the backend`
+          : yt ? `Reported by YouTube · updated ${fmtDuration(now - ytStatsAt)} ago · read every ${Math.round((ytState?.pollMs || 30000) / 1000)} s by the backend. PCV · sampled is the highest count read in this broadcast, so a spike between two reads can be missed${p?.official ? '; YouTube Studio\'s is the official figure' : owned ? '; YouTube Studio\'s official figure appears once YouTube Analytics reports it' : ': YouTube Studio\'s official figure needs the channel\'s sign-in'}.`
             : 'Waiting for the first YouTube Data API response.');
   }
 
@@ -2726,7 +2742,7 @@
     const now = Date.now();
     for (const t of tiles.values()) t.renderSide(now);
     if (inspected) loadViewerHistory(inspected); // re-renders the sheet with the new reading
-    takeAutoCapture(); // a CCV peak or an ended stream the backend queued
+    takeAutoCapture(); // a new PCV or an ended stream the backend queued
     // The backend's record of what it queued, dropped, saved or failed: into this window's
     // event log, except what this window did itself (already logged as it happened).
     if (state.captureLogBoot && state.captureLogBoot !== captureLogBoot) {
@@ -3112,10 +3128,16 @@
       name.textContent = c.title;
       const meta = document.createElement('span');
       meta.className = 'session-row-meta';
-      const [word, tone] = c.expired ? ['Sign-in expired', 'warn']
+      let [word, tone] = c.expired ? ['Sign-in expired', 'warn']
         : c.status === 'error' ? [`Problem: ${c.error}`, 'bad']
           : c.status === 'ok' ? [`${feedCount(c.feeds)} on the wall`, c.feeds ? 'ok' : '']
             : ['Checking…', ''];
+      // Studio audience (viewer graphs from go-live) needs the sign-in to allow YouTube Analytics.
+      const studioOff = !c.expired && (c.studio?.status === 'error' || (c.analytics === false && !c.studio));
+      if (studioOff) {
+        word += ` · Studio audience: ${c.studio?.error || 'this sign-in doesn\'t allow YouTube Analytics: sign in again and leave it ticked.'}`;
+        if (tone !== 'bad') tone = 'warn';
+      }
       meta.textContent = word;
       meta.dataset.tone = tone;
       meta.title = `Signed in ${localStamp(c.savedAt, { zone: true })}`;
@@ -3123,7 +3145,7 @@
       const again = document.createElement('button');
       again.className = 'btn btn-outline btn-xs';
       again.textContent = 'Sign in again';
-      again.hidden = !(c.expired || c.status === 'error');
+      again.hidden = !(c.expired || c.status === 'error' || c.studio?.code === 'scope' || (c.analytics === false && !c.studio));
       again.addEventListener('click', openIngestSignIn);
       const out = document.createElement('button');
       out.className = 'btn btn-ghost btn-xs';
@@ -4475,6 +4497,14 @@
     $('#r-views-wrap').title = audience.views != null
       ? `${fmtInt(audience.views)} total views across the wall's feeds, live and ended, reported by YouTube (${audience.viewsReported}/${audience.viewsFeeds} counts available)`
       : 'YouTube has not reported views for these feeds';
+    // Beside them, the wall's PCV: the highest wall-total CCV read this session (sampled at
+    // each YouTube refresh, so never presented as YouTube Studio's figure).
+    const pcv = total?.pcv;
+    $('#r-pcv-wrap').hidden = $('#r-ccv-wrap').hidden || pcv == null;
+    setText($('#r-pcv'), pcv == null ? '—' : pcv < 1000 ? String(pcv) : compactNumber.format(pcv));
+    $('#r-pcv-wrap').title = pcv != null
+      ? `Peak concurrent viewers across the wall this session: ${fmtInt(pcv)} at ${new Date(total.pcvAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, the highest wall-total CCV read, sampled every ${Math.round((ytState?.pollMs || 30000) / 1000)} s by the backend (${total.pcvSamples} readings). Not YouTube Studio's figure: a spike between two readings can be missed. Each feed's own PCV is on its tile and in its Stats.`
+      : '';
     // A stale LIVE is a lie: the badge shows only while a live feed is actually playing.
     $liveBadge.hidden = !playing.some((t) => t.isLive);
     // A card nothing can measure here (N·A) is left out rather than shown empty.
@@ -5561,7 +5591,7 @@
   let captureLogSeen = 0; // the backend's screenshot record, as far as this window has read it
   let captureLogBoot = null; // which run of the backend that record is from
   const shot = { job: null, tile: null, timer: 0, auto: null };
-  const AUTO_REASON = { peak: 'CCV peak', end: 'stream ended' };
+  const AUTO_REASON = { peak: 'new PCV', end: 'stream ended' };
   // What the extension's failures mean for an automatic job: worth handing back (the
   // extension hiccuped) or not (the source itself is the problem). 'busy' (another screenshot
   // was being taken in this browser) is handed back too, but isn't counted as a try, and this
@@ -5636,8 +5666,34 @@
     }, CAPTURE_TIMEOUT_MS);
   }
 
+  // On a laptop the backend takes it in a headless browser (backend/source-capture.js):
+  // nothing opens on screen and focus stays where it is. It queues behind any automatic one.
+  async function backendShot(tile) {
+    shot.job = 'backend';
+    shot.tile = tile;
+    $('#fs-shot').disabled = true;
+    shotStatus('Capturing in the background…');
+    try {
+      const res = await capturePost('/api/capture/now', { id: tile.stream.source.id });
+      const d = await res.json().catch(() => ({}));
+      if (d.ok) {
+        logEvent(tile, `Source screenshot saved: ${d.detail || d.file}`);
+        return endShot(`Screenshot saved: ${d.file}${d.note ? ` · ${d.note}` : ''}${d.slack ? ' · posting to Slack' : ''}`, 'ok');
+      }
+      const why = d.message || d.error || 'Screenshot capture failed';
+      logEvent(tile, `Source screenshot failed: ${why}`, 'bad');
+      endShot(why, 'bad');
+    } catch {
+      endShot('Screenshot capture failed: the backend did not answer', 'bad');
+    }
+  }
+
   function captureSourceScreenshot(tile) {
     if (shot.job) return shotStatus(shot.auto ? `An automatic screenshot of ${shot.tile.stream.label} is being captured: wait for it to finish` : 'A screenshot is already being captured: wait for it to finish', 'bad');
+    if (server.backendCapture) {
+      if (tile.stream.source.kind !== 'video' || !/^[\w-]{11}$/.test(tile.stream.source.id)) return shotStatus('Source URL unavailable for this feed', 'bad');
+      return backendShot(tile);
+    }
     const blocker = captureBlocker();
     if (blocker) return shotStatus(blocker, 'bad');
     if (tile.stream.source.kind !== 'video' || !/^[\w-]{11}$/.test(tile.stream.source.id)) return shotStatus('Source URL unavailable for this feed', 'bad');
@@ -5645,10 +5701,12 @@
   }
 
   // ---- Automatic source screenshots: the backend queues them when a feed's CCV reaches a
-  // new high or its broadcast ends (backend/auto-capture.js). An admin's page that can take
-  // one claims it (the first claim wins, so one window takes each) and reports back.
+  // new high or its broadcast ends (backend/auto-capture.js). On a laptop the backend takes
+  // them itself, in the background. Otherwise an admin's page that can take one claims it
+  // (the first claim wins, so one window takes each) and reports back.
   let autoClaiming = false;
   async function takeAutoCapture() {
+    if (server.backendCapture) return;
     if (autoClaiming || shot.job || !isAdmin() || !settings.autoCapture || location.protocol === 'file:' || Date.now() < autoBusyUntil) return;
     const open = (ytState?.captures || []).filter((c) => c && /^[\w-]{11}$/.test(c.id));
     if (!open.length || captureBlocker()) return;
@@ -5808,6 +5866,79 @@
     input.type = show ? 'text' : 'password';
     e.currentTarget.textContent = show ? 'Hide' : 'Show';
     e.currentTarget.setAttribute('aria-pressed', String(show));
+  });
+
+  // ---- Slack: where the backend posts screenshots. The token goes in, never out: the page
+  // only learns the channel, the workspace and the token's last 4 characters.
+  let slackNote = null; // { text, tone } from the last save or test, until the next one
+  function renderSlack() {
+    const s = server.slack;
+    const $s = $('#slack-status');
+    const section = $('#slack-form').closest('.ingest-settings');
+    section.hidden = !s; // an older backend, or a user: nothing to set
+    if (!s) return;
+    const fromEnv = s.source === 'env';
+    $('#slack-form').hidden = fromEnv;
+    $('#slack-test').hidden = !s.set;
+    $('#slack-remove').hidden = !s.set || fromEnv;
+    if (s.set && !$('#slack-channel').value) $('#slack-channel').value = s.channelId;
+    $('#slack-token').placeholder = s.set ? `Saved (…${s.last4}): paste a new token to replace it` : 'xoxb-…';
+    let text = s.set
+      ? `Posting to ${s.channelName || s.channelId}${s.team ? ` in ${s.team}` : ''}${fromEnv ? ' (set on the server)' : ''}.${s.pending ? ` ${s.pending} waiting to go.` : ''}`
+      : server.backendCapture ? `Not set up: screenshots are only saved ${server.hosted ? 'on the server' : 'on this laptop'}.`
+        : 'Screenshots are posted only when the backend takes them. This one doesn\'t: it has no Chrome (a server needs one installed, see DEPLOY.md), so the Feed Meter saves them in the browser.';
+    let tone = s.set ? 'ok' : '';
+    if (s.check && s.check.status !== 'ok') [text, tone] = [`${text} ${s.check.message}`, 'warn'];
+    if (slackNote) [text, tone] = [slackNote.text, slackNote.tone];
+    setText($s, text);
+    setTone($s, tone);
+  }
+
+  async function slackAction(url, body) {
+    try {
+      const res = await api(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-IXG-Wall': '1' }, body: JSON.stringify(body || {}) });
+      const data = await res.json().catch(() => ({}));
+      if (data.slack) server.slack = data.slack;
+      return res.status === 404 ? { error: 'The running backend is older than Slack posting: restart it.' } : { ...data, status: res.status };
+    } catch {
+      return { error: 'Backend offline.' };
+    }
+  }
+
+  $('#slack-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const token = $('#slack-token').value.trim();
+    const channel = $('#slack-channel').value.trim();
+    if (!token) {
+      slackNote = { text: 'Paste the app\'s Bot User OAuth Token (xoxb-…), then Save.', tone: 'warn' };
+      return renderSlack();
+    }
+    slackNote = { text: 'Checking with Slack…', tone: '' };
+    renderSlack();
+    const r = await slackAction('/api/slack', { token, channel });
+    slackNote = r.error ? { text: r.error, tone: 'bad' } : null;
+    if (!r.error) $('#slack-token').value = '';
+    renderSlack();
+  });
+  $('#slack-test').addEventListener('click', async () => {
+    slackNote = { text: 'Posting a test message…', tone: '' };
+    renderSlack();
+    const r = await slackAction('/api/slack/test');
+    slackNote = { text: r.message || r.error || 'No answer', tone: r.ok ? 'ok' : 'bad' };
+    renderSlack();
+  });
+  $('#slack-remove').addEventListener('click', async () => {
+    const ok = await ask({
+      title: 'Stop posting screenshots to Slack?',
+      body: 'The token is removed from this wall. Screenshots are still taken and saved on this laptop.',
+      confirm: 'Stop posting',
+      variant: 'destructive',
+    });
+    if (!ok) return;
+    const r = await slackAction('/api/slack', { token: '', channel: '' });
+    slackNote = r.error ? { text: r.error, tone: 'bad' } : null;
+    $('#slack-channel').value = '';
+    renderSlack();
   });
 
   $drawer.querySelectorAll('[data-setting]').forEach((input) => {

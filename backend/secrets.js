@@ -1,5 +1,5 @@
 // Server-side secrets: the YouTube Data API key, the Google OAuth client, each signed-in
-// channel's refresh token, and the key that signs session cookies. This is only storage;
+// channel's refresh token, the Slack bot token, and the key that signs session cookies. This is only storage;
 // google-credentials.js decides what goes in.
 // Kept apart from the wall (feeds and settings), which every signed-in page downloads, so
 // none of it reaches a browser.
@@ -15,9 +15,10 @@ const OAUTH_CLIENT_ID_FORMAT = /^[\w.-]{10,200}\.apps\.googleusercontent\.com$/;
 const OAUTH_SECRET_FORMAT = /^[\w-]{10,200}$/;
 
 class Secrets {
-  constructor({ envYtKey = '', envOauthClient = null } = {}) {
+  constructor({ envYtKey = '', envOauthClient = null, envSlack = null } = {}) {
     this.envYtKey = String(envYtKey).trim();
     this.envOauthClient = envOauthClient?.clientId && envOauthClient?.clientSecret ? envOauthClient : null;
+    this.envSlack = envSlack?.token && envSlack?.channelId ? envSlack : null;
     this.data = {};
     try {
       this.data = JSON.parse(fs.readFileSync(FILE, 'utf8')) || {};
@@ -110,6 +111,29 @@ class Secrets {
   removeChannelToken(channelId) {
     this.data.channels = this.channelTokens().filter((t) => t.channelId !== channelId);
     this.write();
+  }
+
+  // Slack: a bot token (xoxb-…) and the channel screenshots go to. From SLACK_BOT_TOKEN /
+  // SLACK_CHANNEL_ID if set, otherwise entered in Settings.
+  slack() {
+    if (this.envSlack) return this.envSlack;
+    const s = this.data.slack;
+    return s?.token && s?.channelId ? s : null;
+  }
+
+  // All a page may know: whether it's set, where, the channel, and the token's last 4 characters.
+  slackInfo() {
+    const s = this.slack();
+    return { set: !!s, source: this.envSlack ? 'env' : s ? 'saved' : null, channelId: s?.channelId || '', channelName: s?.channelName || '', team: s?.team || '', last4: s ? s.token.slice(-4) : '' };
+  }
+
+  // False when the environment manages it. null removes it.
+  setSlack(slack) {
+    if (this.envSlack) return false;
+    if (slack) this.data.slack = { token: slack.token, channelId: slack.channelId, channelName: slack.channelName || '', team: slack.team || '' };
+    else delete this.data.slack;
+    this.write();
+    return true;
   }
 
   expireChannelToken(channelId) {

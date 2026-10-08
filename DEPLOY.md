@@ -78,13 +78,13 @@ The key can come from anyone's Google Cloud project; nothing is built into the w
    - The server keeps it in `/var/lib/ixg-wall/secrets.json` and never sends it back to the page.
    - To manage it on the server instead, set `YOUTUBE_API_KEY=` in `/etc/ixg-wall/ixg-wall.env` and run `sudo systemctl restart ixg-wall`. The Settings field then becomes read-only.
 
-### 6. Channel sign-in for ingest health (optional)
+### 6. Channel sign-in for ingest health and Studio audience (optional)
 
-This shows how each feed's encoder stream arrives at YouTube: health, resolution, frame rate, and YouTube's warnings such as "bitrate lower than recommended". It needs each channel that owns broadcasts on the wall to sign in, read-only. Several channels can be signed in at once (for example KRAFTON INDIA ESPORTS and Rubix IXG), and each feed's ingest comes from the channel that owns it.
+This shows how each feed's encoder stream arrives at YouTube: health, resolution, frame rate, and YouTube's warnings such as "bitrate lower than recommended". It also reads YouTube Studio's per-minute audience, so those feeds' viewer graphs start when the broadcast went live. It needs each channel that owns broadcasts on the wall to sign in, read-only. Several channels can be signed in at once (for example KRAFTON INDIA ESPORTS and Rubix IXG), and each feed's ingest comes from the channel that owns it.
 
 The OAuth client can come from anyone's Google Cloud project; nothing is built into the wall.
 
-1. In Google Cloud (the same project as the API key is fine), open **Google Auth Platform** and set up the consent screen.
+1. In Google Cloud (the same project as the API key is fine), enable **YouTube Data API v3** and **YouTube Analytics API** under **APIs & Services → Library**, then open **Google Auth Platform** and set up the consent screen.
    - **User type:** if the channel's Google account is in your company's Google Workspace, choose **Internal**.
    - If you choose **External**, the app starts in *Testing*: only the Google accounts listed under **Audience → Test users** can sign in. Anyone else gets "Access blocked: … has not completed the Google verification process" (Error 403: access_denied). Add the account each channel signs in with (for a brand channel, the person's own Google account that manages it), and Google also expires these sign-ins every 7 days.
    - To stop the 7-day expiry, press **Publish app** under **Audience**. The read-only YouTube scope is "sensitive", so until Google verifies the app, channels see "Google hasn't verified this app" and continue through **Advanced → Go to … (unsafe)**.
@@ -96,7 +96,17 @@ The OAuth client can come from anyone's Google Cloud project; nothing is built i
 4. Press **Sign in with Google** and sign in with a channel's account. For each further channel, press **Add another channel**.
    - The server keeps each sign-in in `secrets.json`; no browser ever receives it, and the stream keys are never requested.
    - Each channel can be signed out on its own. If Google stops honouring a sign-in, the channel shows **Sign in again**.
+   - Leave **YouTube Analytics** ticked on Google's consent page. If YouTube refuses a channel's Analytics, the channel shows the reason (and **Sign in again** when the sign-in itself lacks it); ingest health keeps working meanwhile. Channels signed in before the wall asked for it keep working: YouTube accepts the read-only YouTube permission for these reports.
    - Quota: each poll uses 1 unit per signed-in channel with feeds on the wall, from the OAuth client's project. Settings shows the daily estimate.
+
+### 7. Source screenshots on the server (optional)
+
+The server takes the source screenshots itself, in a hidden Chrome, exactly as a laptop wall does: at each feed's new PCV and at a stream's end, named language first and saved under `/var/lib/ixg-wall/screenshots/<session name>/` (or `IXG_SCREENSHOT_DIR`). Nobody's browser is involved and nothing ever pops up on an operator's screen. Since the files are on the server, set up Slack (Settings → Source screenshots → Post screenshots to Slack, or `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` in `ixg-wall.env`) so each one is posted to the team as it's taken.
+
+1. Install Chrome on the server: `sudo apt-get install -y chromium-browser` (Ubuntu) or Google's `google-chrome-stable` package. The wall finds it at `/usr/bin/chromium-browser`, `/usr/bin/chromium` or `/usr/bin/google-chrome`; set `IXG_BROWSER=/path/to/chrome` in `ixg-wall.env` for another location.
+2. `sudo systemctl restart ixg-wall`. Settings → Source screenshots then says the backend takes them.
+
+Without Chrome on the server, the wall falls back to the Feed Meter in an **admin's** browser (see "Running it day to day"), which opens the feed's YouTube page in a window behind the wall. `IXG_SERVER_CAPTURE=0` forces that fallback.
 
 ## Option B: no domain (CloudFront address)
 
@@ -141,7 +151,7 @@ Share the wall password only with admins. Everyone else gets a user link: the si
 
 - **Open the wall in Chrome or Edge at the wall's address**, and sign in once per browser profile.
 - **Install the IXG Wall Feed Meter extension.** The wall asks for it on first open, with a download from the wall's own address and three steps (`extension/README.md`). Without it, per-feed bitrate is an estimate, and "Feeds getting" isn't available. After an update that changes the extension (the wall says so), download it again and reload it in `chrome://extensions`.
-- **Automatic source screenshots** (Settings → Source screenshots) are decided by the server, at each feed's CCV peaks (a new high, or a 10% rise after a 10% fall) and when a broadcast ends (that one shows the total views), but taken by a browser: an **admin's** wall with the Feed Meter. They land in that computer's `Downloads/IXG-Wall/Screenshots`. Users' browsers never take them. Keep one admin wall open during an event; if none is, each screenshot waits 30 minutes and is dropped, and the event log (Wall stats) says so.
+- **Automatic source screenshots** (Settings → Source screenshots) are decided by the server, at each feed's new PCV (its count beats the highest read so far in the broadcast) and when a broadcast ends (that one shows the total views), and taken by the server itself when Chrome is installed on it (step 7 above: hidden, named language first, saved per session, posted to Slack). Without Chrome on the server they're taken by a browser instead: an **admin's** wall with the Feed Meter, which saves them in that computer's `Downloads/IXG-Wall/Screenshots` and can't post them to Slack. Users' browsers never take them. Keep one admin wall open during an event; if none is, each screenshot waits 30 minutes and is dropped, and the event log (Wall stats) says so.
 - **Viewer graphs on the timelines** come from the server, which records every feed's count from the moment the feed is on the wall, whether or not anyone has the wall open. Add the day's links before the streams go live to get each stream from its start; the server keeps 24 hours.
 - **Smoothest playback on low-spec laptops: decode video in software.** A website can't change how the browser decodes video. On the benchmark laptop (Ryzen 5 4600H with Radeon graphics), software decoding dropped 0% of frames at 30 feeds, against 4–7% on its GPU. To get software decoding, open the wall from a desktop shortcut with this target (one line):
 

@@ -50,7 +50,8 @@
       <button id="feeds-tab" class="wall-tab" role="tab" aria-selected="true" aria-controls="feeds-panel" tabindex="0">
         <span class="tab-line">Feeds <span class="tab-count" id="r-playing">0/0</span>
         <span class="tab-ccv" id="r-ccv-wrap" hidden><span class="telemetry muted" id="r-audience-label">CCV</span><span id="r-ccv">—</span></span>
-        <span class="tab-ccv" id="r-views-wrap" data-kind="views" hidden><span class="telemetry muted">Views</span><span id="r-views">—</span></span></span>
+        <span class="tab-ccv" id="r-views-wrap" data-kind="views" hidden><span class="telemetry muted">Views</span><span id="r-views">—</span></span>
+        <span class="tab-ccv" id="r-pcv-wrap" data-kind="pcv" hidden><span class="telemetry muted">PCV</span><span id="r-pcv">—</span></span></span>
       </button>
       <button id="wall-stats-tab" class="wall-tab" role="tab" aria-selected="false" aria-controls="wall-stats-panel" tabindex="-1">Wall stats</button>
     </div>
@@ -436,16 +437,36 @@
         <p class="telemetry muted section-title">Source screenshots</p>
         <label class="switch-row">
           <input class="switch" type="checkbox" role="switch" data-setting="autoCapture">
-          <span>Capture automatically at CCV peaks and when a stream ends</span>
+          <span>Capture automatically at each new PCV and when a stream ends</span>
         </label>
         <label class="field">
-          <span>At most one CCV-peak screenshot per feed every</span>
+          <span>At most one new-PCV screenshot per feed every</span>
           <select class="input select" data-setting="autoCaptureMin">
             <option value="2">2 min</option>
             <option value="4">4 min</option>
           </select>
         </label>
-        <p class="hint">Takes the same screenshot as Capture source screenshot (Stats sheet), without a click: at each peak of a feed's watching-now count (a new high for the stream, or a rise of 10% after a fall of 10%; at most once per feed in the time above; the counts are checked at every YouTube refresh), and once when YouTube says a feed's broadcast is over, when the page shows the total views instead. Files are named with <code>_PEAK_</code> or <code>_END_</code> (Feed Meter 1.5 or newer), an ended stream's with its views (Feed Meter 1.6) and saved to Downloads/IXG-Wall/Screenshots on the computer that took them. The backend decides when, so with several wall windows open only one takes each screenshot: an admin's window with the Feed Meter. Needs a YouTube API key for the counts. Everything queued, saved, dropped or failed is recorded in the event log under Wall stats.</p>
+        <p class="hint">Takes the same screenshot as Capture source screenshot (Stats sheet), without a click: each time a feed's watching-now count beats its PCV, the highest count read so far in that broadcast (checked at every YouTube refresh; at most once per feed in the time above), and once when YouTube says a feed's broadcast is over, when the page shows the total views instead. On a laptop they're named language first, e.g. <code>[Hindi] - BMSD 2026 Semi-Finals Day 1 - 154,337 PCV - 2026-10-08 15-52.png</code>, and saved to Downloads/IXG-Wall/Screenshots in a folder named after the wall's current session, so two walls or two events never mix. The backend decides when and takes them, in a hidden browser: no window opens and focus never moves (a hosted wall's server needs Chrome installed, and keeps them in its own folder, so set up Slack below to get them). Only where the server has no Chrome does an admin's window with the Feed Meter take each one instead (with several open, only one), with the extension's names. Needs a YouTube API key for the counts. Everything queued, saved, posted, dropped or failed is recorded in the event log under Wall stats.</p>
+
+        <div class="ingest-settings">
+          <p class="telemetry muted section-title">Post screenshots to Slack</p>
+          <p class="yt-status" id="slack-status" role="status"></p>
+          <form class="key-form" id="slack-form">
+            <label class="key-label" for="slack-token">Slack app's Bot User OAuth Token</label>
+            <input class="input" id="slack-token" type="password" autocomplete="off" spellcheck="false" placeholder="xoxb-…">
+            <label class="key-label" for="slack-channel">Channel ID (or a link to the channel)</label>
+            <div class="key-row">
+              <input class="input" id="slack-channel" autocomplete="off" spellcheck="false" placeholder="C0123ABCDEF">
+              <button type="submit" class="btn btn-sm">Save</button>
+            </div>
+          </form>
+          <div class="perf-actions">
+            <button type="button" id="slack-test" class="btn btn-outline btn-sm" hidden>Send a test message</button>
+            <button type="button" id="slack-remove" class="btn btn-ghost btn-sm" hidden>Stop posting to Slack</button>
+          </div>
+          <p class="hint">Every screenshot this laptop takes (new PCV, stream end, and Capture source screenshot) is posted to the channel with its file name and what it shows: the sampled PCV, and YouTube Studio's official PCV at the end when the channel's sign-in has it. A post Slack can't take right now is tried again for about 15 minutes.</p>
+          <p class="hint">An invite link (join.slack.com) only lets a person join: the wall posts as a Slack app. One-time setup at <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a>: create an app in the workspace, add the bot scopes <code>files:write</code>, <code>chat:write</code> and <code>channels:read</code> (plus <code>groups:read</code> for a private channel), install it, and copy its Bot User OAuth Token. In Slack, type <code>/invite @your-app</code> in the channel, and copy the channel's ID (channel name → About, at the bottom). The token is checked with Slack before it's saved, stays on the server (secrets.json) and is never sent back to a browser.</p>
+        </div>
       </section>
       <section class="sheet-section" id="terms">
         <p class="telemetry muted section-title">What the numbers mean</p>
@@ -514,7 +535,7 @@
           <option value="hd1080">1080p</option>
         </select>
       </label>
-      <button id="fs-shot" class="btn btn-outline btn-sm" title="Capture Source Screenshot: opens this feed's own YouTube page in a window behind the wall, waits for its title, channel, LIVE state and watching-now count, saves the block as a PNG in Downloads/IXG-Wall/Screenshots, and closes the window">Capture source screenshot</button>
+      <button id="fs-shot" class="btn btn-outline btn-sm" title="Capture Source Screenshot: opens this feed's own YouTube page out of sight (on a laptop, in a hidden browser; on a hosted wall, in a window behind the wall), waits for its title, channel, LIVE state and watching-now count, and saves the block as a PNG in Downloads/IXG-Wall/Screenshots">Capture source screenshot</button>
     </div>
     <p class="fs-shot-status" id="fs-shot-status" role="status" hidden></p>
     <div class="feed-body">
@@ -672,7 +693,7 @@
             <div class="side-head"><span class="side-title">YouTube</span><span class="prov side-yt-tag">N·A</span></div>
             <dl class="m-grid">
               <div class="m m-hero"><dt data-yt="audienceLabel">CCV</dt><dd class="m-lg"><span data-yt="viewers">—</span><span class="m-delta" data-yt="trend"></span></dd><span class="prov" data-yt="viewersProv"></span></div>
-              <div class="m" data-drop="7.5" title="Most viewers since the backend started tracking this feed"><dt>Peak</dt><dd data-yt="peak">—</dd></div>
+              <div class="m" data-drop="7.5" title="Peak concurrent viewers: the highest watching-now count read in this broadcast, sampled at each YouTube refresh (not YouTube Studio's figure)"><dt>PCV</dt><dd data-yt="peak">—</dd></div>
               <div class="m" data-drop="9.5"><dt>Likes</dt><dd data-yt="likes">—</dd></div>
               <div class="m" data-drop="9"><dt>Views</dt><dd data-yt="views">—</dd></div>
               <div class="m" data-drop="8.5"><dt data-yt="uptimeLabel">Live for</dt><dd data-yt="uptime">—</dd></div>

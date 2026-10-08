@@ -23,7 +23,11 @@ const STREAMS = {
   'stream-r': { health: 'bad', resolution: '1080p', frameRate: '60fps', issues: [{ severity: 'warning', type: 'bitrateLow', reason: 'Low bitrate', description: 'The stream\'s current bitrate is lower than the recommended bitrate.' }] },
   'stream-k': { health: 'good', resolution: '1080p', frameRate: '30fps', issues: [] },
 };
-const google = { redirects: new Set(), revoked: [], fields: [], dead: new Set() };
+// Each owned broadcast went live this long ago; YouTube Analytics has processed all but the last few minutes.
+const LIVE_FOR_MIN = 90;
+const STUDIO_BEHIND_MIN = 4;
+const startedAt = new Date(Math.floor((Date.now() - LIVE_FOR_MIN * 60000) / 1000) * 1000).toISOString();
+const google = { redirects: new Set(), revoked: [], fields: [], dead: new Set(), reports: [] };
 const servers = [];
 let fake;
 let wall;
@@ -91,7 +95,25 @@ function fakeGoogle() {
       if (url.pathname === '/api/channels') return json(200, { items: [{ id: channelId, snippet: { title: channel.title } }] });
       if (url.pathname === '/api/liveBroadcasts') {
         const ids = q.get('id').split(',').filter((id) => channel.owns[id]);
-        return json(200, { items: ids.map((id) => ({ id, contentDetails: { boundStreamId: channel.owns[id] }, status: { lifeCycleStatus: 'live' } })) });
+        return json(200, { items: ids.map((id) => ({ id, contentDetails: { boundStreamId: channel.owns[id] }, snippet: { actualStartTime: startedAt }, status: { lifeCycleStatus: 'live' } })) });
+      }
+      if (url.pathname === '/analytics/reports') {
+        google.reports.push(Object.fromEntries(q));
+        // KRAFTON's sign-in is fine, but its project hasn't enabled the Analytics API.
+        if (channelId === 'UCkrafton') {
+          return json(403, { error: { code: 403, message: 'YouTube Analytics API has not been used in project 1234 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/youtubeanalytics.googleapis.com/overview?project=1234 then retry.', errors: [{ reason: 'accessNotConfigured' }] } });
+        }
+        const video = /^video==(.+)$/.exec(q.get('filters'))?.[1];
+        if (!channel.owns[video]) return json(403, { error: { code: 403, message: 'Forbidden', errors: [{ reason: 'forbidden' }] } });
+        if (!q.get('dimensions')) {
+          // As YouTube does: the whole-broadcast average alongside the peak is an internal error.
+          if (q.get('metrics').includes('averageConcurrentViewers')) return json(500, { error: { code: 500, message: 'An internal error has occurred.', errors: [{ reason: 'internalError' }] } });
+          return json(200, { columnHeaders: [{ name: 'peakConcurrentViewers' }], rows: [[2468]] });
+        }
+        // livestreamPosition is in seconds from the start, a row a minute.
+        const rows = [];
+        for (let m = 0; m < LIVE_FOR_MIN - STUDIO_BEHIND_MIN; m++) rows.push([m * 60, 1000 + m, 1010 + m]);
+        return json(200, { columnHeaders: [{ name: 'livestreamPosition' }, { name: 'averageConcurrentViewers' }, { name: 'peakConcurrentViewers' }], rows });
       }
       if (url.pathname === '/api/liveStreams') {
         google.fields.push(q.get('fields'));
@@ -122,7 +144,7 @@ async function startWall({ secrets } = {}) {
     cwd: ROOT,
     env: {
       PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, PORT: String(port), IXG_DATA_DIR: dataDir,
-      IXG_YOUTUBE_API: `${g}/api`, IXG_GOOGLE_TOKEN_URL: `${g}/token`, IXG_GOOGLE_REVOKE_URL: `${g}/revoke`, IXG_GOOGLE_AUTH_URL: `${g}/auth`,
+      IXG_YOUTUBE_API: `${g}/api`, IXG_YOUTUBE_ANALYTICS_API: `${g}/analytics`, IXG_GOOGLE_TOKEN_URL: `${g}/token`, IXG_GOOGLE_REVOKE_URL: `${g}/revoke`, IXG_GOOGLE_AUTH_URL: `${g}/auth`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -231,7 +253,7 @@ test('anyone\'s OAuth client: refused if Google doesn\'t know it, saved with the
 test('several channels sign in; each feed\'s ingest comes from the channel that owns it', async () => {
   const start = await fetch(`${wall.base}/api/youtube/oauth/start`, { redirect: 'manual' });
   const to = new URL(start.headers.get('location'));
-  assert.equal(to.searchParams.get('scope'), 'https://www.googleapis.com/auth/youtube.readonly');
+  assert.equal(to.searchParams.get('scope'), 'https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly');
   assert.equal(to.searchParams.get('access_type'), 'offline');
   assert.equal(to.searchParams.get('redirect_uri'), wall.redirectUri);
   const state = to.searchParams.get('state');
@@ -260,6 +282,45 @@ test('several channels sign in; each feed\'s ingest comes from the channel that 
   for (const secret of ['SECRET-STREAM-KEY', 'refresh-rubix', 'refresh-krafton', 'access-UC', CLIENT.clientSecret]) {
     assert.ok(!everything.includes(secret), `${secret} leaked`);
   }
+});
+
+test('a feed\'s viewer history starts at go-live from the owning channel\'s Studio audience', async () => {
+  let series = [];
+  for (let i = 0; i < 40 && !series.length; i++) {
+    series = (await (await fetch(`${wall.base}/api/youtube/history?id=x-qOOPXB_lg`)).json()).series;
+    if (!series.length) await new Promise((r) => setTimeout(r, 250));
+  }
+  assert.equal(series.length, LIVE_FOR_MIN - STUDIO_BEHIND_MIN, 'one point a minute from go-live');
+  assert.equal(series[0][0], Date.parse(startedAt), 'the first minute is the broadcast\'s start');
+  assert.deepEqual(series[0], [Date.parse(startedAt), 1000, null, null, null, 1010]);
+  assert.equal(series[1][0] - series[0][0], 60000);
+
+  const report = google.reports.find((r) => r.filters === 'video==x-qOOPXB_lg');
+  assert.equal(report.ids, 'channel==MINE');
+  assert.equal(report.dimensions, 'livestreamPosition');
+  assert.equal(report.metrics, 'averageConcurrentViewers,peakConcurrentViewers');
+  assert.ok(!google.reports.some((r) => r.filters === 'video==2QK4W5bngD0'), 'a feed no signed-in channel owns isn\'t asked about');
+
+  // Studio's PCV for the whole broadcast: the peak alone, kept apart from the sampled PCV.
+  const official = google.reports.find((r) => r.filters === 'video==x-qOOPXB_lg' && !r.dimensions);
+  assert.equal(official.metrics, 'peakConcurrentViewers', 'never the average alongside: YouTube errors on that');
+  let kept = null;
+  for (let i = 0; i < 20 && !kept; i++) {
+    try {
+      kept = JSON.parse(fs.readFileSync(path.join(wall.dataDir, 'pcv.json'), 'utf8')).broadcasts['x-qOOPXB_lg']?.official;
+    } catch { /* not written yet */ }
+    if (!kept) await new Promise((r) => setTimeout(r, 250));
+  }
+  assert.equal(kept?.peak, 2468, 'Studio\'s PCV is saved, as its own figure');
+
+  // The Analytics API is off in KRAFTON's project: Settings says so and how to fix it.
+  const s = await until((i) => i.channels.find((c) => c.id === 'UCkrafton')?.studio, 'KRAFTON\'s Studio audience tried');
+  const krafton = s.channels.find((c) => c.id === 'UCkrafton');
+  assert.equal(krafton.studio.code, 'disabled');
+  assert.match(krafton.studio.error, /YouTube Analytics API isn't enabled.*youtubeanalytics\.googleapis\.com/);
+  assert.equal(krafton.status, 'ok', 'ingest health carries on');
+  assert.deepEqual(s.channels.find((c) => c.id === 'UCrubix').studio, { status: 'ok', code: null, error: '' });
+  assert.equal((await (await fetch(`${wall.base}/api/youtube/history?id=Fc45LqGulQ0`)).json()).series.length, 0);
 });
 
 test('an expired sign-in is marked for signing in again, and the other channel keeps working', async () => {

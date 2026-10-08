@@ -1,34 +1,35 @@
 // Automatic source screenshots. The backend decides when one is due, so every open window
-// agrees: a feed's CCV reaches a peak (a new high for the stream, or a rise of PEAK_RISE
-// after a fall of PEAK_DIP from the last screenshot; at most once per feed every 2 or 4 min,
-// Settings → Source screenshots), or YouTube says a feed's broadcast is over after this
-// server saw it live. A wall page with the Feed Meter claims each job (first claim wins, so
-// one window takes it) and reports back; the screenshot itself is the same one as Capture
-// source screenshot (extension/capture.js).
+// agrees: a feed reaches a new PCV (its CCV beats the broadcast's sampled peak, pcv.js; at
+// most once per feed every 2 or 4 min, Settings → Source screenshots), or YouTube says a
+// feed's broadcast is over after this server saw it live. On a laptop the backend takes each job itself, in the background
+// (source-capture.js, client BACKEND). Where it can't (a hosted wall), a wall page with the
+// Feed Meter claims each job (first claim wins, so one window takes it) and reports back;
+// the screenshot itself is the same one as Capture source screenshot (extension/capture.js).
 const { EventEmitter } = require('events');
 
-const PEAK_GAP_MIN = 2;              // one CCV-peak screenshot per feed per this many minutes, at most (autoCaptureMin)
-const PEAK_DIP = 0.1;                // fallen this far below the last screenshot's count, the next rise is a peak of its own...
-const PEAK_RISE = 0.1;               // ...once it has risen this far from the lowest point since
+const PEAK_GAP_MIN = 2;              // one new-PCV screenshot per feed per this many minutes, at most (autoCaptureMin)
 const LEASE_MS = 3 * 60000;          // a claim not reported back in this long is offered again
 const TTL_MS = 30 * 60000;           // a job nobody claims this long (no page with the Feed Meter) is dropped
 const MAX_TRIES = 3;                 // a job handed back this often (no player, the extension hiccuped) is dropped
 const BUSY_HOLD_MS = 20000;          // the Feed Meter was taking another screenshot: offered again after this
-const REASON = { peak: 'CCV peak', end: 'stream ended' };
+const REASON = { peak: 'new PCV', end: 'stream ended' };
+const BACKEND = 'backend';           // the client name the backend claims under
 
 class AutoCapture extends EventEmitter {
-  constructor({ youtube, ingest = null, wallStore, now = () => Date.now() }) {
+  constructor({ youtube, pcv, ingest = null, wallStore, now = () => Date.now() }) {
     super();
     this.youtube = youtube;
+    this.pcv = pcv;
     this.ingest = ingest;
     this.wallStore = wallStore;
     this.now = now;
-    this.feeds = new Map(); // video id -> { captured, capturedAt, low, riseHigh, liveSeen, ended }
+    this.feeds = new Map(); // video id -> { captured, capturedAt, liveSeen, ended }
     this.jobs = [];         // [{ job, id, reason: peak | end, ccv, label, createdAt, claimedAt, client, tries, holdUntil, busyNoted }]
     this.log = [];          // what was decided and what came of it, for the wall's event log
     this.logSeq = 0;
     this.seq = 0;
     this.boot = now().toString(36);
+    this.backendTakes = false; // true: the backend takes every job, and pages are offered none
   }
 
   // One line of the record: the feed, what happened, and which window did it (so that
@@ -47,7 +48,7 @@ class AutoCapture extends EventEmitter {
     return this.wallStore.wall?.settings?.autoCapture !== false;
   }
 
-  // Settings → Source screenshots: the least time between two CCV-peak screenshots of a feed.
+  // Settings → Source screenshots: the least time between two new-PCV screenshots of a feed.
   peakGapMs() {
     const m = Number(this.wallStore.wall?.settings?.autoCaptureMin);
     return (Number.isFinite(m) ? Math.min(60, Math.max(1, m)) : PEAK_GAP_MIN) * 60000;
@@ -80,7 +81,7 @@ class AutoCapture extends EventEmitter {
       // Never while a window is taking it: its result is still to come.
       const why = !ids.has(j.id) ? 'the feed was taken off the wall'
         : this.taken(j, now) ? ''
-          : now - j.createdAt >= TTL_MS ? 'no window with the Feed Meter took it in 30 min'
+          : now - j.createdAt >= TTL_MS ? (this.backendTakes ? 'not taken in 30 min' : 'no window with the Feed Meter took it in 30 min')
             : !this.enabled() ? 'automatic screenshots were turned off' : '';
       if (why) this.note(j.id, `Automatic screenshot (${REASON[j.reason]}) dropped: ${why}`, 'warn');
       return !why;
@@ -88,15 +89,17 @@ class AutoCapture extends EventEmitter {
     for (const id of ids) {
       const v = this.youtube.latest[id];
       if (!v || v.missing) continue;
+      const rec = this.pcv.get(id);
       let f = this.feeds.get(id);
+      // The same video ID live again from another start is another broadcast, with its own PCV.
+      if (f && rec?.startedAt && f.startedAt && f.startedAt !== rec.startedAt) f = null;
       if (!f) {
-        // The high already in the history stands for the last screenshot (it was seen
-        // before); the rise is tracked from this first reading.
-        const high = Math.max(v.viewers ?? -1, ...(this.youtube.history[id] || []).map((p) => p[1] ?? -1));
-        const start = v.viewers ?? high;
-        f = { captured: high, capturedAt: 0, low: start, riseHigh: start, liveSeen: false, ended: false };
+        // The PCV already recorded (before a restart, or this first reading) stands for the
+        // last screenshot: only a PCV beaten from here on is news.
+        f = { startedAt: rec?.startedAt ?? null, captured: rec?.peak ?? -1, capturedAt: 0, liveSeen: false, ended: false };
         this.feeds.set(id, f);
       }
+      f.startedAt ||= rec?.startedAt ?? null;
       const over = this.over(id, v);
       if (over) {
         // An end only this server saw happen; a feed that was over when it got here isn't news.
@@ -110,23 +113,14 @@ class AutoCapture extends EventEmitter {
       f.liveSeen = true;
       const ccv = v.viewers;
       if (ccv == null) continue;
-      // The lowest point since the last screenshot, and the high of the rise from it.
-      if (ccv < f.low) {
-        f.low = ccv;
-        f.riseHigh = ccv;
-      } else if (ccv > f.riseHigh) {
-        f.riseHigh = ccv;
-      }
-      // A peak while the count is at it: higher than the last screenshot, or a rise of its own
-      // after a real fall. One cut short by the cooldown is taken once the cooldown is over,
-      // if the count is still at the high then.
-      const dipped = f.low <= f.captured * (1 - PEAK_DIP) && ccv >= f.low * (1 + PEAK_RISE);
-      if (ccv >= f.riseHigh && (ccv > f.captured || dipped) && now - f.capturedAt >= this.peakGapMs() && this.enabled()) {
+      // A new PCV while the count is at it: this reading is the broadcast's peak, and higher
+      // than the last screenshot's. One cut short by the cooldown is taken once the cooldown
+      // is over, if the count is back at the PCV then; a PCV it has fallen from has passed.
+      const pcv = rec?.peak;
+      if (pcv != null && ccv >= pcv && ccv > f.captured && now - f.capturedAt >= this.peakGapMs() && this.enabled()) {
         this.queue(id, 'peak', ccv, now);
         f.captured = ccv;
         f.capturedAt = now;
-        f.low = ccv;
-        f.riseHigh = ccv;
       }
     }
     return this.signature() !== before;
@@ -136,7 +130,7 @@ class AutoCapture extends EventEmitter {
     // One open job per feed: a newer peak replaces a waiting one, an end replaces a peak.
     // A job whose claim ran out is waiting too; replaced, it starts afresh.
     const waiting = this.jobs.find((j) => j.id === id && !this.taken(j, now));
-    const what = reason === 'peak' ? `CCV peak, ${ccv} watching` : 'stream ended';
+    const what = reason === 'peak' ? `new PCV, ${ccv} watching` : 'stream ended';
     if (waiting && (waiting.reason === reason || reason === 'end')) {
       Object.assign(waiting, { reason, ccv, label: this.label(id), createdAt: now, claimedAt: 0, client: '', tries: 0, holdUntil: 0, busyNoted: false });
       this.note(id, `Automatic screenshot waiting: now for the ${what}`);
@@ -148,9 +142,10 @@ class AutoCapture extends EventEmitter {
     this.note(id, `Automatic screenshot queued: ${what}`);
   }
 
-  // What pages may claim: not being taken, and not held back after a busy Feed Meter.
-  open() {
-    if (!this.enabled()) return [];
+  // What pages may claim (or, with `taker` BACKEND, the backend): not being taken, and not
+  // held back after a busy Feed Meter. Pages get none while the backend takes them.
+  open(taker = '') {
+    if (!this.enabled() || (this.backendTakes && taker !== BACKEND)) return [];
     const now = this.now();
     return this.jobs
       .filter((j) => !this.taken(j, now) && now >= j.holdUntil)
@@ -162,9 +157,10 @@ class AutoCapture extends EventEmitter {
     const now = this.now();
     const j = this.jobs.find((x) => x.job === job);
     if (!j || !this.enabled() || this.taken(j, now) || now < j.holdUntil) return null;
+    if (this.backendTakes && client !== BACKEND) return null; // an older page still offering to help
     j.claimedAt = now;
     j.client = client;
-    this.note(j.id, `Automatic screenshot (${REASON[j.reason]}) being taken by a wall window`, 'info', client);
+    this.note(j.id, `Automatic screenshot (${REASON[j.reason]}) being taken ${client === BACKEND ? 'in the background' : 'by a wall window'}`, 'info', client);
     this.emit('change');
     return { job: j.job, id: j.id, reason: j.reason, ccv: j.ccv, label: this.label(j.id) || j.label };
   }
@@ -207,4 +203,4 @@ class AutoCapture extends EventEmitter {
   }
 }
 
-module.exports = { AutoCapture, PEAK_GAP_MIN, PEAK_DIP, PEAK_RISE, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS };
+module.exports = { AutoCapture, BACKEND, PEAK_GAP_MIN, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS };

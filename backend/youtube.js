@@ -1,6 +1,10 @@
 // YouTube Data API poller. One poll a minute covers every video on the wall however many
 // windows are open (each window polling on its own would multiply the quota), and keeps a
 // 24-hour audience history on disk for the per-feed analytics.
+//
+// For a feed owned by a signed-in channel, YouTube Studio's own per-minute audience
+// (youtube-studio.js) goes back to when the broadcast went live; the history a page sees is
+// those minutes, then this wall's readings after the last minute YouTube has processed.
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -15,6 +19,8 @@ const SAVE_EVERY_MS = 5 * 60000;
 const DAILY_QUOTA = 10000;              // YouTube's default; videos.list and channels.list cost 1 unit
 const TREND_MS = 10 * 60000;
 const RATE_WINDOW_MS = 60 * 60000;
+const BACKOFF_MAX_MS = 5 * 60000;
+const QUOTA_RETRY_MS = 15 * 60000;
 const VIDEO_ID = /^[\w-]{11}$/;
 
 // Quota resets at midnight Pacific time.
@@ -29,10 +35,14 @@ function seconds(iso) {
 }
 
 class YouTubeStats extends EventEmitter {
-  constructor({ wallStore, credentials }) {
+  constructor({ wallStore, credentials, pcv = null }) {
     super();
     this.wallStore = wallStore;
     this.credentials = credentials; // whoever's API key is saved; pages only ever see keyInfo()
+    this.pcv = pcv;               // each broadcast's peak concurrent viewers (pcv.js)
+    this.failures = 0;            // polls failed in a row: the next waits longer
+    this.quotaOut = false;
+    this.nextPollAt = 0;
     this.history = {};            // video id -> [[t, viewers, likes, views, comments], ...]
     this.totals = [];             // [[t, viewers across the wall]]
     this.latest = {};             // video id -> what YouTube reported last
@@ -82,6 +92,7 @@ class YouTubeStats extends EventEmitter {
     clearTimeout(this.timer);
     clearTimeout(this.soon);
     this.save();
+    this.pcv?.save();
   }
 
   // Seconds between polls, from the wall's settings.
@@ -128,7 +139,10 @@ class YouTubeStats extends EventEmitter {
       signal: AbortSignal.timeout(15000),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(describeGoogleError(body, res.status, this.credentials.referer).message);
+    if (!res.ok) {
+      const { code, message } = describeGoogleError(body, res.status, this.credentials.referer);
+      throw Object.assign(new Error(message), { code });
+    }
     return body;
   }
 
@@ -184,19 +198,36 @@ class YouTubeStats extends EventEmitter {
         for (const id of batch) if (!returned.has(id)) this.latest[id] = { missing: true };
       }
       if (now - this.channelsAt > CHANNELS_EVERY_MS) await this.pollChannels(key, ids);
+      // A broadcast new to the PCV tracker starts from the readings already in the history.
+      for (const id of ids) this.pcv?.seed(id, this.history[id], this.latest[id]);
       this.record(now, ids);
+      for (const id of ids) this.pcv?.observe(id, this.latest[id], now);
+      this.pcv?.prune(ids, now);
       this.status = 'ok';
       this.error = '';
       this.updatedAt = now;
+      this.failures = 0;
     } catch (err) {
+      // The PCVs, the history and the last numbers stay as they were: nothing is reset.
       this.status = 'error';
       this.error = String(err.message || err);
+      this.failures += 1;
+      this.quotaOut = err.code === 'quota';
     } finally {
       this.polling = false;
       if (Date.now() - this.savedAt > SAVE_EVERY_MS) this.save();
-      if (!this.stopped) this.timer = setTimeout(() => this.poll(), this.pollMs());
+      const wait = this.status === 'error' ? this.backoffMs() : this.pollMs();
+      this.nextPollAt = Date.now() + wait;
+      if (!this.stopped) this.timer = setTimeout(() => this.poll(), wait);
       this.emit('update');
     }
+  }
+
+  // After a failed poll: twice the interval, then 4×, 8×… up to 5 minutes, so an outage or a
+  // flaky network isn't hammered. Out of quota, every 15 minutes until it resets.
+  backoffMs() {
+    if (this.quotaOut) return QUOTA_RETRY_MS;
+    return Math.min(BACKOFF_MAX_MS, this.pollMs() * 2 ** Math.min(this.failures, 6));
   }
 
   async pollChannels(key, ids) {
@@ -227,7 +258,8 @@ class YouTubeStats extends EventEmitter {
         any = true;
       }
     }
-    if (any) this.totals.push([now, total]);
+    // Stamped with the session, so the wall's PCV is this session's and not an earlier event's.
+    if (any) this.totals.push([now, total, this.wallStore.wall?.session?.id ?? null]);
     for (const [id, series] of Object.entries(this.history)) {
       while (series.length && series[0][0] < cutoff) series.shift();
       if (!series.length) delete this.history[id];
@@ -245,10 +277,14 @@ class YouTubeStats extends EventEmitter {
       videos[id] = v.missing ? v : {
         ...v,
         subscribers: v.channelId ? this.channels[v.channelId]?.subscribers ?? null : null,
-        analysis: analyse(this.history[id] || [], now),
+        analysis: analyse(this.series(id), now, this.history[id] || []),
+        pcv: this.pcv?.view(id) ?? null, // current CCV, sampled PCV and Studio's, kept apart
       };
     }
     const totalSeries = this.totals.map(([t, v]) => [t, v]);
+    // The wall's PCV: the highest wall-total CCV read in this session (sampled, like a feed's).
+    const session = this.wallStore.wall?.session?.id ?? null;
+    const wallPcv = peakOf(this.totals.filter((p) => (p[2] ?? null) === session), 1);
     return {
       status: this.status,
       error: this.error,
@@ -256,15 +292,26 @@ class YouTubeStats extends EventEmitter {
       ingest: this.ingest ? this.ingest.state() : null, // channel sign-in: encoder → YouTube health
       updatedAt: this.updatedAt,
       pollMs: this.pollMs(),
+      retryAt: this.status === 'error' ? this.nextPollAt : null, // backing off after failures
       units: { used: this.units.used, limit: DAILY_QUOTA },
-      total: { ...peakOf(totalSeries, 1), now: totalSeries.at(-1)?.[1] ?? null, since: totalSeries[0]?.[0] ?? null },
+      total: { ...peakOf(totalSeries, 1), now: totalSeries.at(-1)?.[1] ?? null, since: totalSeries[0]?.[0] ?? null, pcv: wallPcv.peak, pcvAt: wallPcv.peakAt, pcvSamples: wallPcv.samples },
       videos,
     };
   }
 
   // Raw series for a chart: one video's [t, viewers, likes, views, comments], or the wall total.
+  // A Studio minute is [t, average viewers, null, null, null, peak viewers].
   series(id) {
-    return id === 'total' ? this.totals : this.history[id] || [];
+    if (id === 'total') return this.totals;
+    const wall = this.history[id] || [];
+    const minutes = this.studio?.minutes(id);
+    if (!minutes?.length) return wall;
+    const cutoff = Date.now() - HISTORY_MS;
+    const until = minutes.at(-1)[0] + 60000; // a minute's row covers the minute it starts
+    return [
+      ...minutes.filter((m) => m[0] >= cutoff).map(([t, avg, peak]) => [t, avg, null, null, null, peak]),
+      ...wall.filter((p) => p[0] >= until),
+    ];
   }
 }
 
@@ -295,8 +342,12 @@ function perHour(series, col, now) {
   return hours >= 5 / 60 ? Math.round((last[col] - first[col]) / hours) : null;
 }
 
-function analyse(series, now) {
+// series: Studio's minutes (if any) then the wall's readings; wall: all of the wall's readings.
+function analyse(series, now, wall) {
   const viewers = peakOf(series, 1);
+  // A Studio minute's peak can top its average.
+  for (const p of series) if (p[5] != null && p[5] > viewers.peak) [viewers.peak, viewers.peakAt] = [p[5], p[0]];
+  const studio = series.filter((p) => p.length > 5);
   const last = series.at(-1);
   // Viewers now against roughly ten minutes ago.
   const before = series.find((p) => p[0] >= now - TREND_MS - 30000 && p[1] != null);
@@ -309,7 +360,10 @@ function analyse(series, now) {
     trendMins: before && before !== last ? Math.round((last[0] - before[0]) / 60000) : null,
     likesPerHour: perHour(series, 2, now),
     viewsPerHour: perHour(series, 3, now),
-    trackedSince: series[0]?.[0] ?? null,
+    trackedSince: wall[0]?.[0] ?? null,
+    readings: wall.length,
+    studioFrom: studio[0]?.[0] ?? null,          // Studio's minutes, from the broadcast's start
+    studioUntil: studio.length ? studio.at(-1)[0] + 60000 : null,
   };
 }
 

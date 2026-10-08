@@ -53,6 +53,7 @@ class IngestHealth extends EventEmitter {
         status: c.expired ? 'expired' : s?.status || 'checking',
         error: c.expired ? '' : s?.error || '',
         feeds: owned[c.id] || 0,
+        studio: c.expired ? null : this.studio?.channelState(c.id) || null, // reading its Studio audience
       };
     });
     return {
@@ -139,13 +140,14 @@ class IngestHealth extends EventEmitter {
             part: 'contentDetails,snippet,status',
             id: ask.slice(i, i + 50).join(','),
             maxResults: '50',
-            fields: 'items(id,contentDetails(boundStreamId),snippet(actualEndTime),status(lifeCycleStatus))',
+            fields: 'items(id,contentDetails(boundStreamId),snippet(actualStartTime,actualEndTime),status(lifeCycleStatus))',
           });
           for (const b of found.items || []) {
             owners.set(b.id, {
               channelId: c.id,
               streamId: b.contentDetails?.boundStreamId || null,
               broadcast: b.status?.lifeCycleStatus || null, // created | ready | testing | live | complete | revoked …
+              startedAt: b.snippet?.actualStartTime || null,
               endedAt: b.snippet?.actualEndTime || null,
               checkedAt: Date.now(),
             });
@@ -193,7 +195,7 @@ class IngestHealth extends EventEmitter {
       const videos = {};
       for (const id of ids) {
         const o = this.owners.get(id);
-        if (o) videos[id] = { owned: true, channelId: o.channelId, broadcast: o.broadcast, endedAt: o.endedAt, checkedAt: o.checkedAt, streamId: o.streamId };
+        if (o) videos[id] = { owned: true, channelId: o.channelId, broadcast: o.broadcast, startedAt: o.startedAt, endedAt: o.endedAt, checkedAt: o.checkedAt, streamId: o.streamId };
         else if (this.asked.has(id)) videos[id] = { owned: false };
       }
       for (const c of channels) {
@@ -303,4 +305,4 @@ class IngestHealth extends EventEmitter {
   }
 }
 
-module.exports = { IngestHealth };
+module.exports = { IngestHealth, ON_AIR };

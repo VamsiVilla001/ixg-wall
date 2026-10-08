@@ -6,7 +6,10 @@
 // (the laptop wall) every request is an admin's, as before.
 const crypto = require('crypto');
 
-const COOKIE = 'ixg_session';
+// Browsers keep cookies apart by host, not by port: two walls on one computer (8080 and
+// 8081) would overwrite each other's session and sign each other out, so the cookie's name
+// carries the port whenever the wall's address has one.
+const cookieName = (port) => (port ? `ixg_session_${port}` : 'ixg_session');
 const SESSION_DAYS = 30;           // a wall left running on a monitor mustn't sign itself out mid-event
 const MAX_FAILS = 10;              // failed sign-ins allowed per address...
 const FAIL_WINDOW_MS = 15 * 60000; // ...per this window
@@ -15,9 +18,10 @@ const FAIL_DELAY_MS = 400;         // every wrong password waits this long
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest();
 
 class Auth {
-  constructor({ password, secret, secure, linkActive = () => false }) {
+  constructor({ password, secret, secure, port = '', linkActive = () => false }) {
     this.enabled = !!password;
     this.secure = !!secure;
+    this.cookie = cookieName(String(port || '').trim()); // the explicit port in PUBLIC_URL, if any
     this.passwordHash = this.enabled ? sha256(password) : null;
     // The signing key depends on the password, so changing IXG_PASSWORD signs everyone out.
     this.key = this.enabled ? crypto.createHmac('sha256', secret).update(this.passwordHash).digest() : null;
@@ -53,7 +57,7 @@ class Auth {
   // password is set.
   session(req) {
     if (!this.enabled) return { role: 'admin', linkId: null };
-    return this.read(readCookie(req.headers.cookie, COOKIE));
+    return this.read(readCookie(req.headers.cookie, this.cookie));
   }
 
   allows(req) {
@@ -64,11 +68,11 @@ class Auth {
   sessionCookie(role = 'admin', linkId = null, until = Infinity) {
     const exp = Math.min(Date.now() + SESSION_DAYS * 86400e3, until);
     const link = linkId || '-';
-    return cookie(`${exp}.${role}.${link}.${this.sign(exp, role, link)}`, Math.max(1, Math.floor((exp - Date.now()) / 1000)), this.secure);
+    return cookie(this.cookie, `${exp}.${role}.${link}.${this.sign(exp, role, link)}`, Math.max(1, Math.floor((exp - Date.now()) / 1000)), this.secure);
   }
 
   clearCookie() {
-    return cookie('', 0, this.secure);
+    return cookie(this.cookie, '', 0, this.secure);
   }
 
   // Seconds until this address may try again, or 0. Only failures count, so signing in
@@ -107,8 +111,8 @@ function readCookie(header, name) {
   return '';
 }
 
-function cookie(value, maxAge, secure) {
-  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+function cookie(name, value, maxAge, secure) {
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
 }
 
 // The visitor's address. Behind the local reverse proxy (Caddy) the socket is loopback and
@@ -122,4 +126,4 @@ function clientAddress(req) {
   return peer;
 }
 
-module.exports = { Auth, clientAddress };
+module.exports = { Auth, clientAddress, cookieName };

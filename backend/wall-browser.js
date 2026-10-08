@@ -20,6 +20,8 @@ function findBrowser() {
   const candidates = [
     ...roots.map((r) => path.join(r, 'Google', 'Chrome', 'Application', 'chrome.exe')),
     ...roots.map((r) => path.join(r, 'Microsoft', 'Edge', 'Application', 'msedge.exe')),
+    // A Linux server (hosted): Chrome or Chromium there takes the source screenshots headless.
+    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium',
   ];
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
@@ -186,4 +188,4 @@ class WallBrowser {
   }
 }
 
-module.exports = { WallBrowser, DECODE_MODES, PROFILE_DIR };
+module.exports = { WallBrowser, DECODE_MODES, PROFILE_DIR, findBrowser };

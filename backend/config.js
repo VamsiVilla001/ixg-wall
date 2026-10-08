@@ -60,5 +60,11 @@ module.exports = {
     clientId: (process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim(),
     clientSecret: (process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim(),
   },
+  // Optional: the Slack app's bot token and the channel ID that screenshots are posted to,
+  // instead of entering them in Settings.
+  SLACK: {
+    token: (process.env.SLACK_BOT_TOKEN || '').trim(),
+    channelId: (process.env.SLACK_CHANNEL_ID || '').trim(),
+  },
   problems,
 };

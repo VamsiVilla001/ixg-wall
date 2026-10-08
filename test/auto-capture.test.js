@@ -1,35 +1,44 @@
 // Automatic source screenshots (backend/auto-capture.js): when the backend queues one (a new
-// CCV high, at most once per cooldown per feed; a broadcast it saw end), and how pages claim
-// them so one window takes each. In-process, with fake YouTube numbers.   npm test
+// PCV, at most once per cooldown per feed; a broadcast it saw end), and how pages claim them
+// so one window takes each. In-process, with fake YouTube numbers.   npm test
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { AutoCapture, PEAK_GAP_MIN, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS } = require('../backend/auto-capture');
+const { AutoCapture, BACKEND, PEAK_GAP_MIN, LEASE_MS, TTL_MS, MAX_TRIES, BUSY_HOLD_MS } = require('../backend/auto-capture');
+const { PcvTracker } = require('../backend/pcv');
 
 const PEAK_COOLDOWN_MS = PEAK_GAP_MIN * 60000;
 
 const A = 'aaaaaaaaaaa';
 const B = 'bbbbbbbbbbb';
 
-function setup({ history = {}, settings = {} } = {}) {
+// peaks: PCVs recorded before (an earlier run of the wall).
+function setup({ peaks = {}, settings = {} } = {}) {
   let t = 1_000_000;
-  const youtube = { latest: {}, history, ids: () => [A, B] };
+  const youtube = { latest: {}, ids: () => [A, B] };
   const ingest = { videos: {} };
+  const pcv = new PcvTracker({ file: null, now: () => t });
+  for (const [id, peak] of Object.entries(peaks)) pcv.observe(id, { broadcast: 'live', viewers: peak });
   const wallStore = { wall: { settings, streams: [{ label: 'Feed A', source: { id: A } }, { label: 'Feed B', source: { id: B } }] } };
-  const ac = new AutoCapture({ youtube, ingest, wallStore, now: () => t });
+  const ac = new AutoCapture({ youtube, pcv, ingest, wallStore, now: () => t });
   const live = (id, viewers) => { youtube.latest[id] = { broadcast: 'live', viewers, endedAt: null }; };
-  const step = (ms = 30000) => { t += ms; return ac.check(); };
+  // A YouTube poll: each reading goes to the PCV tracker first, as youtube.js does.
+  const step = (ms = 30000) => {
+    t += ms;
+    for (const id of youtube.ids()) pcv.observe(id, youtube.latest[id], t);
+    return ac.check();
+  };
   return { ac, youtube, ingest, wallStore, live, step, advance: (ms) => { t += ms; } };
 }
 
-test('a new CCV high queues one screenshot; the first reading and the history are the baseline', () => {
-  const { ac, live, step } = setup({ history: { [A]: [[0, 900], [1, 1200]] } });
+test('a new PCV queues one screenshot; the PCV recorded before and the first reading are the baseline', () => {
+  const { ac, live, step } = setup({ peaks: { [A]: 1200 } });
   live(A, 1000);
   live(B, 50);
   step();
-  assert.deepEqual(ac.open(), [], 'nothing on the first look: those highs were already seen');
+  assert.deepEqual(ac.open(), [], 'nothing on the first look: those peaks were already seen');
   live(A, 1050);
   step();
-  assert.deepEqual(ac.open(), [], 'up 5% from a reading 17% under the high seen before: not a peak yet');
+  assert.deepEqual(ac.open(), [], 'up, but still under the PCV of 1200: not a new PCV');
   live(A, 1300);
   live(B, 60);
   step();
@@ -37,34 +46,28 @@ test('a new CCV high queues one screenshot; the first reading and the history ar
   assert.deepEqual(open.map((j) => [j.id, j.reason, j.ccv, j.label]), [[A, 'peak', 1300, 'Feed A'], [B, 'peak', 60, 'Feed B']]);
 });
 
-test('after a fall of 10% or more, a rise of 10% is a peak of its own, even below the stream\'s high', () => {
-  const { ac, live, step } = setup({ history: { [A]: [[0, 1200]] } });
-  live(A, 1000); // 17% under the 1200 seen before: a fall already
+test('a rise after a fall is no screenshot while it stays under the PCV; beating the PCV is', () => {
+  const { ac, live, step } = setup({ peaks: { [A]: 1200 } });
+  live(A, 1000);
   step();
-  live(A, 1090);
-  step();
-  assert.deepEqual(ac.open(), [], '9% up from the low: not yet');
-  live(A, 1100);
-  step();
-  assert.deepEqual(ac.open().map((j) => j.ccv), [1100], '10% up from the 1000 low: a peak, though under 1200');
-  ac.finish(ac.claim(ac.open()[0].job).job, { outcome: 'saved' });
-  live(A, 1040); // a 5% dip: not a fall
-  step(PEAK_COOLDOWN_MS);
   live(A, 1150);
-  step();
-  assert.deepEqual(ac.open().map((j) => j.ccv), [1150], 'back above the last screenshot: a new high');
-  ac.finish(ac.claim(ac.open()[0].job).job, { outcome: 'saved' });
-  live(A, 1000); // 13% under the 1150 screenshot
   step(PEAK_COOLDOWN_MS);
-  live(A, 1080);
+  assert.deepEqual(ac.open(), [], 'a 15% rise from 1000, but under the PCV of 1200');
+  live(A, 1200);
   step();
-  assert.deepEqual(ac.open(), [], '8% up from the low: still climbing, not a peak');
-  live(A, 1120);
+  assert.deepEqual(ac.open(), [], 'level with the PCV is not a new one');
+  live(A, 1201);
   step();
-  assert.deepEqual(ac.open().map((j) => j.ccv), [1120], 'a second lower peak after a second fall');
+  assert.deepEqual(ac.open().map((j) => j.ccv), [1201]);
+  ac.finish(ac.claim(ac.open()[0].job).job, { outcome: 'saved' });
+  live(A, 900);
+  step(PEAK_COOLDOWN_MS);
+  live(A, 1190);
+  step();
+  assert.deepEqual(ac.open(), [], 'a second rise, still under the PCV of 1201');
 });
 
-test('one peak per feed per cooldown; a high the cooldown held back is taken after, if still at it', () => {
+test('one new-PCV screenshot per feed per cooldown; a PCV the cooldown held back is taken after, if back at it', () => {
   const { ac, live, step } = setup();
   live(A, 100);
   step();
@@ -78,13 +81,13 @@ test('one peak per feed per cooldown; a high the cooldown held back is taken aft
   assert.deepEqual(ac.open(), [], 'inside the cooldown');
   live(A, 250);
   step(PEAK_COOLDOWN_MS);
-  assert.deepEqual(ac.open(), [], 'the count fell from its high: that high has passed');
+  assert.deepEqual(ac.open(), [], 'the count fell from the PCV of 300: that peak has passed');
   live(A, 300);
   step();
-  assert.equal(ac.open()[0].ccv, 300, 'back at the high after the cooldown');
+  assert.equal(ac.open()[0].ccv, 300, 'back at the PCV after the cooldown');
 });
 
-test('the gap between peak screenshots is 2 min by default, or what Settings says (4 min)', () => {
+test('the gap between new-PCV screenshots is 2 min by default, or what Settings says (4 min)', () => {
   assert.equal(PEAK_GAP_MIN, 2);
   const { ac, live, step } = setup({ settings: { autoCaptureMin: 4 } });
   live(A, 100);
@@ -99,7 +102,7 @@ test('the gap between peak screenshots is 2 min by default, or what Settings say
   assert.equal(ac.open()[0].ccv, 300, 'taken at 4 min');
 });
 
-test('a waiting peak is replaced by a newer one, not queued twice', () => {
+test('a waiting new-PCV screenshot is replaced by a newer one, not queued twice', () => {
   const { ac, live, step } = setup();
   live(A, 100);
   step();
@@ -196,18 +199,18 @@ test('the record says what was queued, taken, saved, handed back and dropped, an
   }
   const log = ac.entries();
   assert.deepEqual(log.map((e) => [e.label, e.level, e.client, e.text]), [
-    ['Feed A', 'info', '', 'Automatic screenshot queued: CCV peak, 200 watching'],
-    ['Feed A', 'info', 'win-1', 'Automatic screenshot (CCV peak) being taken by a wall window'],
-    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (CCV peak) handed back, will be tried again: no player to send the request through'],
-    ['Feed A', 'info', 'win-2', 'Automatic screenshot (CCV peak) being taken by a wall window'],
-    ['Feed A', 'info', 'win-2', 'Automatic screenshot (CCV peak) saved: A_B_200CCV_PEAK.png'],
-    ['Feed A', 'info', '', 'Automatic screenshot queued: CCV peak, 300 watching'],
-    ['Feed A', 'info', 'win-1', 'Automatic screenshot (CCV peak) being taken by a wall window'],
-    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (CCV peak) handed back, will be tried again: busy'],
-    ['Feed A', 'info', 'win-1', 'Automatic screenshot (CCV peak) being taken by a wall window'],
-    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (CCV peak) handed back, will be tried again: busy'],
-    ['Feed A', 'info', 'win-1', 'Automatic screenshot (CCV peak) being taken by a wall window'],
-    ['Feed A', 'bad', 'win-1', 'Automatic screenshot (CCV peak) dropped after 3 tries: busy'],
+    ['Feed A', 'info', '', 'Automatic screenshot queued: new PCV, 200 watching'],
+    ['Feed A', 'info', 'win-1', 'Automatic screenshot (new PCV) being taken by a wall window'],
+    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (new PCV) handed back, will be tried again: no player to send the request through'],
+    ['Feed A', 'info', 'win-2', 'Automatic screenshot (new PCV) being taken by a wall window'],
+    ['Feed A', 'info', 'win-2', 'Automatic screenshot (new PCV) saved: A_B_200CCV_PEAK.png'],
+    ['Feed A', 'info', '', 'Automatic screenshot queued: new PCV, 300 watching'],
+    ['Feed A', 'info', 'win-1', 'Automatic screenshot (new PCV) being taken by a wall window'],
+    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (new PCV) handed back, will be tried again: busy'],
+    ['Feed A', 'info', 'win-1', 'Automatic screenshot (new PCV) being taken by a wall window'],
+    ['Feed A', 'warn', 'win-1', 'Automatic screenshot (new PCV) handed back, will be tried again: busy'],
+    ['Feed A', 'info', 'win-1', 'Automatic screenshot (new PCV) being taken by a wall window'],
+    ['Feed A', 'bad', 'win-1', 'Automatic screenshot (new PCV) dropped after 3 tries: busy'],
   ]);
   assert.ok(log.every((e, i) => i === 0 || e.seq > log[i - 1].seq), 'numbered in order, so a window can read on from where it was');
 });
@@ -278,7 +281,7 @@ test('only the window holding the claim is heard; a job being taken is never dro
   step();
   assert.equal(ac.jobs.length, 1, 'w2 is taking it: kept past the 30 min');
   assert.equal(ac.finish(job, { outcome: 'saved', detail: 'ok.png', client: 'w2' }), true);
-  assert.equal(ac.entries().at(-1).text, 'Automatic screenshot (CCV peak) saved: ok.png');
+  assert.equal(ac.entries().at(-1).text, 'Automatic screenshot (new PCV) saved: ok.png');
   assert.equal(ac.finish(job, { outcome: 'saved', client: 'w2' }), false, 'nothing left to report on');
 });
 
@@ -298,4 +301,23 @@ test('a busy Feed Meter is not a failed try: the job is held back briefly, then 
   }
   assert.equal(ac.open().length, 1, 'still there after more busy answers than MAX_TRIES');
   assert.equal(ac.entries().filter((e) => e.text.includes('waiting for the Feed Meter')).length, 1, 'said once, not on every try');
+});
+
+test('on a laptop the backend takes every job in the background: pages are offered none and can\'t claim', () => {
+  const { ac, live, step } = setup();
+  ac.backendTakes = true;
+  live(A, 100);
+  step();
+  live(A, 200);
+  step();
+  assert.deepEqual(ac.open(), [], 'a wall page is offered nothing');
+  const [job] = ac.open(BACKEND);
+  assert.equal(job.reason, 'peak');
+  assert.equal(ac.claim(job.job, 'some-page'), null, 'an older page offering to help is refused');
+  const claimed = ac.claim(job.job, BACKEND);
+  assert.equal(claimed.id, A);
+  assert.match(ac.entries().at(-1).text, /being taken in the background/);
+  assert.ok(ac.finish(job.job, { outcome: 'saved', detail: 'C:/shots/a.png', client: BACKEND }));
+  assert.match(ac.entries().at(-1).text, /saved: C:\/shots\/a\.png/);
+  assert.deepEqual(ac.open(BACKEND), []);
 });

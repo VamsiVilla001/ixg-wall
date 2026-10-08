@@ -62,6 +62,22 @@ test('live CCV switches to views on completion and back to CCV for a live respon
   assert.equal(w.total(['one']).value, 42);
 });
 
+test('the Stats sheet shows the sampled PCV and YouTube Studio\'s apart, the last update and the stream status', () => {
+  const w = wall();
+  w.reports.set('one', { broadcast: 'live', viewers: 42, views: 1000, pcv: { status: 'live', ccv: 42, peak: 228978, peakAt: 5000, lastUpdated: 900, samples: 60, official: { peak: 231000, at: 800 } } });
+  const rows = w.stats('one');
+  const row = (label) => rows.find(([l]) => l === label)?.[1];
+  assert.match(row('PCV · sampled'), /^228978 at /);
+  assert.match(row('PCV · YouTube Studio'), /^231000 · official, as of /);
+  assert.match(row('Last update'), / ago$/);
+  assert.equal(row('Stream status'), 'Live');
+  w.reports.set('two', { broadcast: 'upcoming', viewers: null, pcv: { status: 'waiting', ccv: null, peak: null, peakAt: null, lastUpdated: 700, samples: 0, official: null } });
+  const waiting = w.stats('two');
+  assert.equal(waiting.find(([l]) => l === 'PCV · sampled')[1], 'Waiting for live data');
+  assert.equal(waiting.find(([l]) => l === 'PCV · YouTube Studio')[1], null, 'no official figure without the channel\'s sign-in, and never a made-up one');
+  assert.equal(waiting.find(([l]) => l === 'Stream status')[1], 'Waiting for live data');
+});
+
 test('mixed walls count live CCV without adding ended views or duplicate video IDs', () => {
   const w = wall();
   w.reports.set('live', { broadcast: 'live', viewers: 15, views: 5000 });

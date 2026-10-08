@@ -229,10 +229,12 @@ test('user links: an admin generates one, and whoever opens it is a user who nev
     assert.ok(!text.includes(KEY) && !text.includes('9876'), `${p} shows a user the key`);
   }
   // Blocked on the server, not just hidden on the page.
-  for (const [p, body] of [['/api/youtube/key', { key: '' }], ['/api/youtube/oauth/client', {}], ['/api/youtube/oauth/signout', {}], ['/api/links', { name: 'more' }]]) {
+  for (const [p, body] of [['/api/youtube/key', { key: '' }], ['/api/youtube/oauth/client', {}], ['/api/youtube/oauth/signout', {}], ['/api/links', { name: 'more' }],
+    ['/api/slack', { token: '', channel: '' }], ['/api/slack/test', {}], ['/api/capture/now', { id: 'aaaaaaaaaaa' }]]) {
     assert.equal((await user(p, { method: 'POST', body: JSON.stringify(body) })).status, 403, p);
   }
   assert.equal((await user('/api/links')).status, 403);
+  assert.equal((await (await user('/api/config')).json()).slack, null, 'a user learns nothing about Slack');
   assert.equal((await user('/api/youtube/oauth/start', { redirect: 'manual' })).status, 403);
   assert.equal((await (await admin('/api/config')).json()).ytKey.last4, '9876', 'the key is still in place');
 
@@ -329,6 +331,26 @@ test('repeated wrong passwords are locked out for a while', async () => {
   for (let i = 0; i < 11; i++) codes.push((await attempt()).status);
   assert.deepEqual(codes.slice(0, 10), Array(10).fill(401));
   assert.equal(codes[10], 429);
+});
+
+test('two walls on one computer keep separate sessions: the cookie is named per port', async () => {
+  const a = await startServer({ vars: { IXG_PASSWORD: PASSWORD } });
+  const b = await startServer({ vars: { IXG_PASSWORD: PASSWORD } });
+  const signIn = async (s) => {
+    const res = await fetch(`${s.base}/api/login`, { method: 'POST', headers: { 'X-IXG-Wall': '1', Origin: `http://localhost:${s.port}` }, body: JSON.stringify({ password: PASSWORD }) });
+    assert.equal(res.status, 200);
+    return res.headers.get('set-cookie').split(';')[0];
+  };
+  const ca = await signIn(a);
+  const cb = await signIn(b);
+  assert.equal(ca.split('=')[0], `ixg_session_${a.port}`);
+  assert.equal(cb.split('=')[0], `ixg_session_${b.port}`);
+  assert.equal(cookie.split('=')[0], 'ixg_session', 'the https wall, with no port in its address, keeps the plain name');
+  // A browser sends every localhost cookie whatever the port: each wall reads its own and both stay signed in.
+  const both = `${ca}; ${cb}`;
+  assert.equal((await fetch(`${a.base}/api/wall`, { headers: { Cookie: both } })).status, 200);
+  assert.equal((await fetch(`${b.base}/api/wall`, { headers: { Cookie: both } })).status, 200);
+  assert.equal((await fetch(`${a.base}/api/wall`, { headers: { Cookie: cb } })).status, 401, 'the other wall\'s cookie is not this wall\'s');
 });
 
 test('laptop mode: no sign-in, as before', async () => {

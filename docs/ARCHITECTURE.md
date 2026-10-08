@@ -18,17 +18,31 @@ There are no runtime dependencies: Node's standard library on the server, plain 
 server.js               HTTP server: static files, sign-in gate, JSON API, SSE stream
 backend/
   config.js             every environment setting, validated at startup
-  auth.js               sign-in: signed session cookie naming the role (admin | user), lockout
+  auth.js               sign-in: signed session cookie naming the role (admin | user), lockout; the
+                        cookie's name carries the port, so two walls on one computer don't sign each
+                        other out (browsers don't keep cookies apart by port)
   user-links.js         the links that sign browsers in as users (kept in secrets.json)
   secrets.js            storage for the YouTube key, OAuth client, channel sign-ins and the
                         session-signing key (secrets.json), never sent to pages
   google-credentials.js anyone's YouTube key and Google OAuth client, checked with Google before
                         they're saved; the channel sign-ins (any number) and their tokens
   wall-store.js         the wall: feeds + settings (wall.json), versioned
-  youtube.js            YouTube Data API poller + 24 h audience history (youtube-history.json)
-  auto-capture.js       when an automatic source screenshot is due (a CCV peak: a new high, or a 10% rise after a 10% fall, at
-                        most once per 2 or 4 min; a broadcast seen ending); pages with the Feed Meter
+  youtube.js            YouTube Data API poller + 24 h audience history (youtube-history.json);
+                        a feed's history is Studio's minutes, then the wall's readings
+  youtube-studio.js     YouTube Analytics' per-minute concurrent viewers since go-live, for feeds
+                        a signed-in channel owns (the numbers behind Studio's live graph)
+  pcv.js                each broadcast's PCV (pcv.json): current CCV, sampled peak and its time, last update,
+                        status; never goes down within a broadcast; Studio's official PCV kept apart
+  auto-capture.js       when an automatic source screenshot is due (a new PCV, at most once per 2 or 4 min;
+                        a broadcast seen ending). On a laptop the backend
+                        takes each job itself (source-capture.js); hosted, pages with the Feed Meter
                         claim each job (/api/capture/claim, first wins) and report back
+  source-capture.js     source screenshots in a headless Chrome (DevTools pipe, own throwaway profile,
+                        below-normal priority): no window, no focus change. Reuses the extension's
+                        source-youtube.js reader; names files language first ([Hindi] - …); POST
+                        /api/capture/now is the button
+  slack.js              posts each screenshot to a Slack channel as the app's bot (files.getUploadURLExternal,
+                        upload, files.completeUploadExternal), one at a time, retrying what Slack can get over
   extension.js          ships the Feed Meter: its fixed ID and version for the page's install
                         check, and /extension/ixg-wall-feed-meter.zip built from extension/
   youtube-ingest.js     ingest health per feed, read through the signed-in channel that owns it:
@@ -160,7 +174,7 @@ YouTube embed limits, measured on the wall laptops:
 - **Google credentials can belong to anyone, and nothing is built in** (`backend/google-credentials.js`). The key and the OAuth client come from Settings or the environment (`YOUTUBE_API_KEY`, `GOOGLE_OAUTH_CLIENT_ID/_SECRET`), from any Google Cloud project. Each is checked with Google before it replaces a working one:
   - **Key:** one call to `i18nLanguages` (1 unit). Google calling it invalid refuses it. A restriction or a disabled API is saved with the fix, because that's changed in Google Cloud, not by changing the key.
   - **OAuth client:** the token endpoint with a made-up code (`invalid_grant` means the ID and secret are right; `invalid_client` means they're wrong), then the sign-in page with this wall's redirect address. Google's error page carries the reason in `authError`, a base64 protobuf (`readAuthError()`), e.g. `redirect_uri_mismatch`. A refused client isn't saved; an unregistered address is saved with the exact URI to add, and **Check again** re-runs the check.
-- **Channel sign-ins live on the server**, one refresh token per channel in `secrets.json`. Any number of channels can sign in with the client. Every 5 minutes `liveBroadcasts` asks each channel which feeds it owns; each poll reads `liveStreams` once per channel with feeds. Pages see only `{ client, channels: [{ id, title, status, feeds }], videos: { id: health… } }`. The stream key (`cdn.ingestionInfo`) is never requested. A sign-in Google stops honouring stays listed as expired until it signs in again or out. A different client ID signs every channel out, because their sign-ins belong to the old client.
+- **Channel sign-ins live on the server**, one refresh token per channel in `secrets.json`. Any number of channels can sign in with the client. Every 5 minutes `liveBroadcasts` asks each channel which feeds it owns; each poll reads `liveStreams` once per channel with feeds. Pages see only `{ client, channels: [{ id, title, status, feeds }], videos: { id: health… } }`. The stream key (`cdn.ingestionInfo`) is never requested. The same sign-in reads YouTube Analytics (`yt-analytics.readonly`): every 3 minutes while a feed is on air, the report `livestreamPosition` × `averageConcurrentViewers,peakConcurrentViewers` for that video, which needs the YouTube Analytics API enabled in the client's project. Each channel's `studio` state (`ok`, or `disabled` / `scope` / `other` with the fix) shows in Settings. A sign-in Google stops honouring stays listed as expired until it signs in again or out. A different client ID signs every channel out, because their sign-ins belong to the old client.
 - **The YouTube key goes in, never out.** It reaches the server only through `POST /api/youtube/key` and lives in `secrets.json`. Pages learn `{ set, source, last4 }`. Older walls that kept the key in `wall.json` are migrated on startup.
 
 ## HTTP API
@@ -193,5 +207,6 @@ Signed-in only when a password is set; changes also need the `X-IXG-Wall: 1` hea
 |---|---|
 | `wall.json` | feeds and settings, with a version number |
 | `secrets.json` | YouTube key, OAuth client, one refresh token per signed-in channel, user links, session-signing key (mode 600) |
-| `youtube-history.json` | 24 h audience history, quota used today |
+| `youtube-history.json` | 24 h audience history (wall totals stamped with the session, for the Feeds tab's PCV), quota used today |
+| `pcv.json` | each broadcast's current CCV, sampled PCV and its time, last update, status, and Studio's official PCV (kept 30 days after it was last seen) |
 | `backend.json`, `wall-profile/` | laptop only: wall-window decode mode, pid, browser profile |
